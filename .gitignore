@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+runs/
+*.mp4
+*.mov
+*.ply
+*.glb
+*.gltf
+*.obj
+data/
+.env
+*.egg-info/

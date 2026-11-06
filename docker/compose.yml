@@ -1,0 +1,74 @@
+# CAST: `docker compose up -d` from this folder, after copying .env.example to .env.
+#
+#   phones ──Funnel :443──► tailscale ──capture_net──► capture   (public, upload-only)
+#   tailnet ─Serve  :8443─► tailscale ──studio_net───► studio    (tailnet only)
+#                                                      worker    (checks uploads; no network)
+#                                                      reconstructor (GPU; no network)
+#
+# capture and studio are on separate networks, so the public app can never reach studio.
+
+name: castlive
+
+services:
+  tailscale:
+    image: tailscale/tailscale:stable
+    environment:
+      TS_AUTHKEY: ${TS_AUTHKEY:?set TS_AUTHKEY in .env}
+      TS_HOSTNAME: ${CASTLIVE_HOSTNAME:-castlive}
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_SERVE_CONFIG: /config/serve.json
+      TS_USERSPACE: "true"
+    volumes:
+      - tailscale-state:/var/lib/tailscale
+      - ./serve.json:/config/serve.json:ro
+    networks: [default, capture_net, studio_net]  # default: reach Tailscale's servers
+    restart: unless-stopped
+
+  capture:
+    build: { context: .., dockerfile: docker/Dockerfile }
+    image: castlive:local
+    command: castlive-capture
+    environment:
+      CASTLIVE_CAPTURE_HOST: 0.0.0.0
+    volumes: [castlive-data:/data]
+    networks: [capture_net]
+    restart: unless-stopped
+
+  studio:
+    image: castlive:local
+    command: castlive-studio
+    environment:
+      CASTLIVE_STUDIO_HOST: 0.0.0.0
+    volumes: [castlive-data:/data]
+    networks: [studio_net]
+    restart: unless-stopped
+
+  worker:  # checks uploads; runs anywhere
+    image: castlive:local
+    command: castlive-worker
+    volumes: [castlive-data:/data]
+    network_mode: none
+    restart: unless-stopped
+
+  reconstructor:  # builds 3D models; needs an NVIDIA GPU (without one, only this service fails)
+    build: { context: .., dockerfile: docker/Dockerfile.worker }
+    image: castlive-worker:local
+    command: castlive-worker --reconstruct
+    volumes: [castlive-data:/data]
+    network_mode: none
+    shm_size: 2gb
+    deploy:
+      resources:
+        reservations:
+          devices: [{ driver: nvidia, count: all, capabilities: [gpu] }]
+    restart: unless-stopped
+
+networks:
+  capture_net:
+    internal: true
+  studio_net:
+    internal: true
+
+volumes:
+  tailscale-state:
+  castlive-data:

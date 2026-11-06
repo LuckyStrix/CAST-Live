@@ -1,0 +1,32 @@
+[project]
+name = "castlive"
+version = "0.1.0"
+description = "Phone video of an artifact to a complete 3D model"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "segno>=1.6",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "httpx>=0.27", "ruff>=0.5", "numpy"]
+
+[project.scripts]
+castlive-capture = "castlive.capture.app:main"
+castlive-studio = "castlive.studio.app:main"
+castlive-worker = "castlive.worker.loop:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["castlive*"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CAST Live Studio</title>
+<link rel="stylesheet" href="/assets/studio.css">
+<script type="module" src="/assets/studio.js"></script>
+</head>
+<body>
+<header>
+  <a href="#" class="brand">CAST Live Studio</a>
+  <span id="health"></span>
+</header>
+
+<main id="home">
+  <section>
+    <h2>New project</h2>
+    <form id="new-project">
+      <input name="name" placeholder="Project name, e.g. Nippur tablets 2026" required maxlength="200">
+      <select name="mode">
+        <option value="object">Objects that can be picked up</option>
+        <option value="in-situ">Objects in the ground</option>
+      </select>
+      <button>Create</button>
+    </form>
+  </section>
+  <section>
+    <h2>Projects</h2>
+    <table id="projects"><thead><tr><th>Name</th><th>Mode</th><th>Captures</th></tr></thead><tbody></tbody></table>
+  </section>
+</main>
+
+<main id="project" hidden>
+  <h1 id="p-name"></h1>
+  <section>
+    <h2>Invite links</h2>
+    <p class="muted">Give a link (or its QR code) to the people capturing. Anyone with the link can send scans to this project until it expires or you revoke it.</p>
+    <form id="new-invite">
+      <input name="label" placeholder="Who is it for? e.g. Field team A" maxlength="200">
+      <label>Expires after <input name="days" type="number" value="30" min="1" max="365"> days</label>
+      <label>Max captures <input name="max_captures" type="number" min="1" placeholder="no limit"></label>
+      <button>Create link</button>
+    </form>
+    <div id="invites"></div>
+  </section>
+  <section>
+    <h2>Captures</h2>
+    <table id="captures"><thead><tr><th>When</th><th>Mode</th><th>Status</th><th>Video</th><th>3D model</th><th>Notes</th></tr></thead><tbody></tbody></table>
+  </section>
+</main>
+</body>
+</html>

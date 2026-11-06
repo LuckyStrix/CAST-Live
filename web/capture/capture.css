@@ -1,0 +1,70 @@
+:root {
+  --bg: #1b1b1b; --fg: #f4f1ea; --muted: #b9b3a6; --accent: #e0a94a; --go: #4caf6a;
+  --bad: #e5544b; --card: #2a2927;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+  font: 18px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+[hidden] { display: none !important; }
+
+.screen { max-width: 32rem; margin: 0 auto; padding: 24px 16px calc(24px + env(safe-area-inset-bottom));
+  display: flex; flex-direction: column; gap: 14px; min-height: 100%; }
+h1 { font-size: 1.6rem; margin: 8px 0; }
+.project { color: var(--muted); margin: 0; }
+
+button { font: inherit; color: inherit; border: 0; border-radius: 14px; cursor: pointer; }
+button.big { width: 100%; min-height: 64px; padding: 14px 18px; background: var(--accent); color: #1b1b1b;
+  font-weight: 650; font-size: 1.15rem; }
+button.big:disabled { opacity: .4; }
+button.go { background: var(--go); color: #fff; }
+button.small { background: transparent; color: var(--muted); padding: 10px; }
+button.choice { display: flex; align-items: center; gap: 16px; text-align: left; background: var(--card);
+  color: var(--fg); min-height: 110px; }
+.icon { font-size: 2rem; width: 2.5rem; text-align: center; flex: none; }
+
+.check { display: flex; gap: 12px; align-items: center; padding: 14px; background: var(--card);
+  border-radius: 14px; }
+.check input { width: 28px; height: 28px; flex: none; }
+
+.cards { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 10px; }
+.cards li { display: flex; gap: 12px; align-items: center; background: var(--card); padding: 14px;
+  border-radius: 14px; }
+body.mode-object .only-insitu, body.mode-in-situ .only-object { display: none; }
+
+.banner { position: fixed; top: 0; left: 0; right: 0; z-index: 10; padding: 8px 16px;
+  background: var(--accent); color: #1b1b1b; font-size: .9rem; text-align: center; }
+
+.bar { height: 18px; background: var(--card); border-radius: 9px; overflow: hidden; }
+.bar > div { height: 100%; width: 0; background: var(--go); transition: width .3s; }
+
+/* Recording: full-screen camera with overlays */
+.record { position: fixed; inset: 0; background: #000; }
+.record video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+/* The object should fill most of this box: small in the picture means little detail. */
+.frame-guide { position: absolute; left: 12%; right: 12%; top: 26%; bottom: 30%;
+  border: 3px dashed rgba(255,255,255,.75); border-radius: 18px; pointer-events: none; }
+.frame-guide span { position: absolute; top: -1.9em; left: 0; right: 0; text-align: center;
+  font-size: .9rem; text-shadow: 0 1px 3px #000; }
+.top { position: absolute; top: calc(12px + env(safe-area-inset-top)); left: 0; right: 0;
+  display: flex; justify-content: center; }
+.ring { width: 120px; height: 120px; transform: rotate(-90deg); }
+.ring circle { fill: rgba(0,0,0,.45); stroke-width: 9; }
+.ring-bg { stroke: rgba(255,255,255,.25); }
+.ring-fg { stroke: var(--go); fill: none !important; stroke-linecap: round;
+  stroke-dasharray: 264; stroke-dashoffset: 264; transition: stroke-dashoffset .3s; }
+.ring-text { position: absolute; top: 0; height: 120px; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; font-size: .85rem; text-shadow: 0 1px 3px #000; }
+#timer { font-size: 1.2rem; font-weight: 650; }
+.warning { position: absolute; top: calc(150px + env(safe-area-inset-top)); left: 16px; right: 16px;
+  text-align: center; background: var(--bad); color: #fff; padding: 10px; border-radius: 12px;
+  font-weight: 650; font-size: 1.2rem; }
+.bottom { position: absolute; bottom: 0; left: 0; right: 0; padding: 16px 16px calc(16px + env(safe-area-inset-bottom));
+  display: flex; flex-direction: column; gap: 10px; background: linear-gradient(transparent, rgba(0,0,0,.8)); }
+.hint { margin: 0; text-align: center; text-shadow: 0 1px 3px #000; }
+button.rec { background: var(--bad); color: #fff; }
+.overlay { position: absolute; inset: 0; background: rgba(20,20,20,.92); padding: 32px 16px;
+  display: flex; flex-direction: column; justify-content: center; gap: 16px; text-align: center; }
+.flip-anim { font-size: 5rem; animation: spin 2.5s ease-in-out infinite; }
+@keyframes spin { 50% { transform: rotateX(180deg); } }
+.flip-anim.still { animation: none; color: var(--go); }

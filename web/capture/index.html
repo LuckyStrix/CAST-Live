@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1b1b1b">
+<title>CAST Live scan</title>
+<link rel="stylesheet" href="/assets/capture.css">
+<script type="module" src="/assets/capture.js"></script>
+</head>
+<body>
+<div id="pending" class="banner" hidden></div>
+
+<main id="s-loading" class="screen"><p data-t="loading"></p></main>
+
+<main id="s-message" class="screen" hidden><p id="message"></p></main>
+
+<main id="s-consent" class="screen" hidden>
+  <p class="project" id="project-name"></p>
+  <h1 data-t="consent_title"></h1>
+  <p id="consent-1"></p>
+  <p data-t="consent_2"></p>
+  <label class="check"><input type="checkbox" id="consent"> <span data-t="consent_check"></span></label>
+  <button id="consent-next" class="big" disabled data-t="next"></button>
+</main>
+
+<main id="s-mode" class="screen" hidden>
+  <h1 data-t="mode_title"></h1>
+  <button class="big choice" data-mode="object"><span class="icon">✋</span><span data-t="mode_object"></span></button>
+  <button class="big choice" data-mode="in-situ"><span class="icon">⛏</span><span data-t="mode_insitu"></span></button>
+</main>
+
+<main id="s-check" class="screen" hidden>
+  <h1 data-t="check_title"></h1>
+  <ul class="cards">
+    <li><span class="icon">☁</span><span data-t="check_light"></span></li>
+    <li><span class="icon">▭</span><span data-t="check_surface"></span></li>
+    <li class="only-object"><span class="icon">🧤</span><span data-t="check_gloves"></span></li>
+    <li class="only-insitu"><span class="icon">◫</span><span data-t="check_markers"></span></li>
+    <li><span class="icon">⤢</span><span data-t="check_close"></span></li>
+    <li><span class="icon">↻</span><span data-t="check_space"></span></li>
+  </ul>
+  <button id="start-camera" class="big" data-t="start_camera"></button>
+</main>
+
+<main id="s-record" class="record" hidden>
+  <video id="preview" playsinline muted autoplay></video>
+  <div class="frame-guide" aria-hidden="true"><span data-t="frame_guide"></span></div>
+  <div class="top">
+    <svg class="ring" viewBox="0 0 100 100" aria-hidden="true">
+      <circle cx="50" cy="50" r="42" class="ring-bg"/>
+      <circle cx="50" cy="50" r="42" class="ring-fg" id="ring"/>
+    </svg>
+    <div class="ring-text"><span id="pass-label"></span><span id="timer">0:00</span></div>
+  </div>
+  <div id="warning" class="warning" hidden></div>
+  <div class="bottom">
+    <p id="hint" class="hint"></p>
+    <button id="rec" class="big rec" data-t="rec_start"></button>
+    <button id="round-done" class="big" hidden data-t="rec_round_done"></button>
+    <button id="finish" class="big go" hidden data-t="finish"></button>
+    <button id="cancel" class="small" data-t="cancel"></button>
+  </div>
+  <div id="flip" class="overlay" hidden>
+    <div class="flip-anim" id="pass-icon">⟲</div>
+    <h1 id="pass-title"></h1>
+    <p id="pass-body"></p>
+    <button id="flip-done" class="big go"></button>
+    <button id="pass-finish" class="small" data-t="finish_now" hidden></button>
+  </div>
+</main>
+
+<main id="s-upload" class="screen" hidden>
+  <h1 data-t="upload_title"></h1>
+  <div class="bar"><div id="upload-bar"></div></div>
+  <p id="upload-pct"></p>
+  <p id="upload-note" data-t="upload_body"></p>
+</main>
+
+<main id="s-status" class="screen" hidden>
+  <h1 data-t="status_title"></h1>
+  <p id="status-text"></p>
+  <button id="again" class="big" data-t="record_another"></button>
+</main>
+</body>
+</html>

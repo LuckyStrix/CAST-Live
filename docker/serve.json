@@ -1,0 +1,17 @@
+{
+  "TCP": {
+    "443": { "HTTPS": true },
+    "8443": { "HTTPS": true }
+  },
+  "Web": {
+    "${TS_CERT_DOMAIN}:443": {
+      "Handlers": { "/": { "Proxy": "http://capture:8001" } }
+    },
+    "${TS_CERT_DOMAIN}:8443": {
+      "Handlers": { "/": { "Proxy": "http://studio:8002" } }
+    }
+  },
+  "AllowFunnel": {
+    "${TS_CERT_DOMAIN}:443": true
+  }
+}

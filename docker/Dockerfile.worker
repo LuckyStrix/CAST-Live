@@ -1,0 +1,67 @@
+# GPU reconstructor: COLMAP (CUDA) from the official image, plus Python for the CAST pipeline.
+# Needs an NVIDIA GPU and Docker's GPU support (Docker Desktop on Windows has it built in).
+# Pinned: the pipeline is checked against this COLMAP (4.2.1). Change it on purpose, then test.
+FROM colmap/colmap@sha256:c1de51615dff33066cd305071226b6343c1168324ef3bd622f0825e55feb5efe AS texrecon
+# mvs-texturing (BSD-3; its mve, rayint and mapmap parts BSD-3, Eigen in MPL-2-only mode),
+# every source pinned. Only the texrecon program goes into the final image.
+RUN apt-get update && apt-get install -y --no-install-recommends git cmake build-essential \
+      ca-certificates libpng-dev libjpeg-dev libtiff-dev libtbb-dev && rm -rf /var/lib/apt/lists/*
+RUN git clone https://github.com/nmoehrle/mvs-texturing /src && cd /src \
+ && git checkout f3374298ac959cb5afe47a14e4d35d2ac7fbdbb1 \
+ && sed -i 's/-march=native//' CMakeLists.txt \
+ && sed -i 's|GIT_TAG         cuda|GIT_TAG         b62c8905f6dd11a179128517e814e0e00f9bb809|; s|GIT_REPOSITORY  https://github.com/nmoehrle/mve.git|&\n    GIT_TAG         91c0f3fde0781399b2fe872d8e52e4899274a84a|' elibs/CMakeLists.txt \
+ && mkdir build && cd build && cmake -DCMAKE_BUILD_TYPE=Release .. && make -j8 texrecon
+
+FROM colmap/colmap@sha256:c1de51615dff33066cd305071226b6343c1168324ef3bd622f0825e55feb5efe
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 python3-venv ffmpeg libgl1 libglib2.0-0 libgomp1 \
+      libpng16-16t64 libjpeg-turbo8 libtiff6 libtbb12 \
+ && rm -rf /var/lib/apt/lists/*
+
+# uid 1000 owns /data in every CAST container (Ubuntu's image ships a user "ubuntu" with it)
+RUN (userdel -r ubuntu 2>/dev/null || true) && useradd --create-home --uid 1000 castlive \
+ && mkdir -p /data && chown castlive /data
+
+RUN python3 -m venv /opt/venv
+ENV PATH=/opt/venv/bin:$PATH PYTHONUNBUFFERED=1
+RUN pip install --no-cache-dir numpy scipy opencv-python-headless pillow open3d \
+      "rembg[gpu]" "onnxruntime-gpu[cuda,cudnn]"
+
+# COLMAP's ALIKED + LightGlue models (fetched now: the reconstructor has no network), checked
+# against the hashes COLMAP itself expects.
+RUN mkdir -p /opt/castlive/models && cd /opt/castlive/models \
+ && base=https://github.com/colmap/colmap/releases/download/3.13.0 \
+ && python -c "import urllib.request as u; [u.urlretrieve(f'$base/{n}', n) for n in ['aliked-n16rot.onnx','aliked-lightglue.onnx','bruteforce-matcher.onnx']]" \
+ && printf '%s  %s\n' \
+    39c423d0a6f03d39ec89d3d1d61853765c2fb6a8b8381376c703e5758778a547 aliked-n16rot.onnx \
+    b9a5de7204648b18a8cf5dcac819f9d30de1a5961ef03756803c8b86c2dceb8d aliked-lightglue.onnx \
+    3c1282f96d83f5ffc861a873298d08bbe5219f59af59223f5ceab5c41a182a47 bruteforce-matcher.onnx \
+    | sha256sum -c -
+
+# COLMAP's built-in ONNX Runtime (for ALIKED/LightGlue) is built for CUDA 12 and dlopens
+# "libcudnn.so". The pip ONNX Runtime above (for rembg) is a CUDA 13 build with its own cuDNN,
+# loaded by its own preload_dlls(). Mixing the two failed ("CUDA failure 999"), so COLMAP gets
+# a separate cuDNN for CUDA 12, placed after the image's own CUDA 12 libraries.
+RUN pip install --no-cache-dir --target /opt/castlive/cudnn12 "nvidia-cudnn-cu12>=9,<10" \
+ && mkdir -p /opt/castlive/cudalibs && for so in /opt/castlive/cudnn12/nvidia/cudnn/lib/*.so*; do \
+      n=$(basename "$so"); ln -sf "$so" "/opt/castlive/cudalibs/$n"; ln -sf "$so" "/opt/castlive/cudalibs/${n%%.so*}.so"; done
+ENV LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:/opt/castlive/cudalibs
+
+# The masking model is fetched now, so the worker never needs the internet
+USER castlive
+RUN python -c "from rembg import new_session; new_session('birefnet-general-lite', providers=['CPUExecutionProvider'])"
+USER root
+
+COPY --from=texrecon /src/build/apps/texrecon/texrecon /usr/local/bin/texrecon
+
+WORKDIR /app
+COPY pyproject.toml ./
+COPY castlive ./castlive
+COPY web ./web
+RUN pip install --no-cache-dir --no-deps . && pip install --no-cache-dir fastapi uvicorn segno
+
+ENV CASTLIVE_DATA=/data CASTLIVE_WEB=/app/web
+USER castlive
+CMD ["castlive-worker", "--reconstruct"]

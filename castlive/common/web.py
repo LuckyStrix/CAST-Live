@@ -1,9 +1,11 @@
 """Small pieces shared by the capture and studio apps."""
 
+import re
 import time
 from collections import defaultdict, deque
 
 from fastapi import Request
+from starlette.requests import HTTPConnection
 
 SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
@@ -22,10 +24,16 @@ async def add_security_headers(request: Request, call_next):
     response = await call_next(request)
     for k, v in SECURITY_HEADERS.items():
         response.headers.setdefault(k, v)
+    host = request.url.hostname or ""
+    if re.fullmatch(r"[A-Za-z0-9.-]+", host):  # the live view's WebSocket back to this host
+        # (older Safari doesn't count wss: as 'self')
+        csp = response.headers["Content-Security-Policy"]
+        response.headers["Content-Security-Policy"] = csp.replace(
+            "connect-src 'self' blob:;", f"connect-src 'self' blob: wss://{host};")
     return response
 
 
-def client_ip(request: Request) -> str:
+def client_ip(request: HTTPConnection) -> str:
     """The phone's address. The capture app is reachable only through tailscaled (its own docker
     network), which appends the real peer to X-Forwarded-For. Earlier entries come from the
     client and can be anything, so only the last one is trusted."""

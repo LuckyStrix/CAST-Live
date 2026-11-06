@@ -92,7 +92,7 @@ def test_worker_reconstructs_and_reports(cfg, token, monkeypatch):
     cid = _checked(cfg, token)
     stages = []
 
-    def fake(video, meta, mode, run_dir, progress):
+    def fake(video, meta, mode, run_dir, progress, wait):
         progress("frames", 0.5)
         row = _row(cfg, cid)
         stages.append(row["stage"])

@@ -29,7 +29,8 @@ def stages_for(mode: str) -> list[str]:
 
 
 def process(video: Path, meta: dict, mode: str, run_dir: Path,
-            progress=lambda stage, fraction: None) -> dict:
+            progress=lambda stage, fraction: None, wait=lambda: None) -> dict:
+    """`wait()` is called before each stage: it returns when the GPU is free to use."""
     run_dir.mkdir(parents=True, exist_ok=True)
     state_path = run_dir / "state.json"
     state = json.loads(state_path.read_text()) if state_path.exists() else {"done": []}
@@ -46,6 +47,7 @@ def process(video: Path, meta: dict, mode: str, run_dir: Path,
     def stage(name, fn):
         if name in state["done"]:
             return
+        wait()
         progress(name, 0.0)
         note(f"{name}: started")
         start = time.time()

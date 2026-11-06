@@ -1,9 +1,10 @@
-# CAST: `docker compose up -d` from this folder, after copying .env.example to .env.
+# CAST Live: `docker compose up -d` from this folder, after copying .env.example to .env.
 #
-#   phones ──Funnel :443──► tailscale ──capture_net──► capture   (public, upload-only)
+#   phones ──Funnel :443──► tailscale ──capture_net──► capture   (public: uploads, live frames)
 #   tailnet ─Serve  :8443─► tailscale ──studio_net───► studio    (tailnet only)
 #                                                      worker    (checks uploads; no network)
 #                                                      reconstructor (GPU; no network)
+#                                                      live (GPU; no network; files only)
 #
 # capture and studio are on separate networks, so the public app can never reach studio.
 
@@ -54,6 +55,19 @@ services:
     build: { context: .., dockerfile: docker/Dockerfile.worker }
     image: castlive-worker:local
     command: castlive-worker --reconstruct
+    volumes: [castlive-data:/data]
+    network_mode: none
+    shm_size: 2gb
+    deploy:
+      resources:
+        reservations:
+          devices: [{ driver: nvidia, count: all, capabilities: [gpu] }]
+    restart: unless-stopped
+
+  live:  # tracks phones while they film (MASt3R-SLAM, non-commercial); needs the GPU
+    build: { context: .., dockerfile: docker/Dockerfile.live }
+    image: castlive-live:local
+    command: castlive-live
     volumes: [castlive-data:/data]
     network_mode: none
     shm_size: 2gb

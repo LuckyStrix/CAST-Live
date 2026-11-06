@@ -8,6 +8,8 @@ dependencies = [
     "fastapi>=0.110",
     "uvicorn>=0.29",
     "segno>=1.6",
+    "pillow>=10",
+    "websockets>=12",
 ]
 
 [project.optional-dependencies]
@@ -17,6 +19,7 @@ dev = ["pytest>=8", "httpx>=0.27", "ruff>=0.5", "numpy"]
 castlive-capture = "castlive.capture.app:main"
 castlive-studio = "castlive.studio.app:main"
 castlive-worker = "castlive.worker.loop:main"
+castlive-live = "castlive.live.service:main"
 
 [build-system]
 requires = ["setuptools>=68"]

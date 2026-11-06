@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CAST Live Watch</title>
+<link rel="stylesheet" href="/assets/studio.css">
+<style>
+  body { height: 100vh; display: flex; flex-direction: column; }
+  #stage { flex: 1; position: relative; min-height: 0; }
+  #stage canvas { display: block; width: 100%; height: 100%; }
+  #info { position: absolute; left: 12px; bottom: 12px; font-size: 13px; background: color-mix(in srgb, var(--bg) 85%, transparent);
+    padding: 8px 10px; border-radius: 8px; max-width: min(90vw, 36rem); }
+  #sectors { position: absolute; right: 12px; top: 12px; width: 140px; height: 140px; }
+  #sectors path { fill: none; stroke-width: 9; stroke: color-mix(in srgb, var(--fg) 20%, transparent); }
+  #sectors path.on { stroke: #2e9e5b; }
+</style>
+<script type="module" src="/assets/live.js"></script>
+</head>
+<body>
+<header>
+  <a href="/" class="brand">CAST Live Studio</a>
+  <span class="muted">Live view while the phone films (refreshes every second)</span>
+</header>
+<div id="stage">
+  <svg id="sectors" viewBox="0 0 100 100" aria-label="Directions filmed so far"></svg>
+  <div id="info">Waiting for the phone…</div>
+</div>
+</body>
+</html>

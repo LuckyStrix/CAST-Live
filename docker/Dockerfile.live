@@ -1,0 +1,59 @@
+# Live image: MASt3R-SLAM (CC BY-NC-SA 4.0, non-commercial) tracking phones while they film.
+# Built for Blackwell GPUs (sm_120) with PyTorch 2.7 / CUDA 12.8. Its sources need small fixes
+# for that PyTorch and GPU; each is checked so a changed upstream fails the build loudly.
+FROM pytorch/pytorch@sha256:3d614dfd422b7e43647491cbf07d6acc516c032fc49c594a94afdebd52552fb9
+ENV DEBIAN_FRONTEND=noninteractive TORCH_CUDA_ARCH_LIST="12.0" MAX_JOBS=8
+RUN apt-get update && apt-get install -y --no-install-recommends git wget libgl1 libglib2.0-0 \
+      libegl1 libgles2 build-essential && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt
+RUN git clone -b windows https://github.com/rmurai0610/MASt3R-SLAM.git m3slam \
+ && cd m3slam && git checkout 6717231a2daf55d501a5824bbec43314d4fb77d9 \
+ && git submodule update --init --recursive
+WORKDIR /opt/m3slam
+
+# curope (MASt3R's fast RoPE): old `.type()` call, and only our GPU.
+RUN cd thirdparty/mast3r/dust3r/croco/models/curope \
+ && sed -i "s/tokens.type()/tokens.scalar_type()/" kernels.cu && grep -q "tokens.scalar_type()" kernels.cu \
+ && sed -i "s/^all_cuda_archs = .*/all_cuda_archs = ['-gencode', 'arch=compute_120,code=sm_120']/" setup.py \
+ && pip install --no-cache-dir --no-build-isolation .
+RUN python -c "import torch, curope" \
+ && pip install --no-cache-dir scikit-learn roma matplotlib tqdm opencv-python-headless scipy einops \
+      trimesh "huggingface-hub[torch]>=0.22" pillow \
+ && pip install --no-cache-dir --no-build-isolation ./thirdparty/mast3r/asmk \
+ && pip install --no-cache-dir --no-deps -e thirdparty/mast3r && pip install --no-cache-dir -e thirdparty/in3d
+RUN pip install --no-cache-dir --no-build-isolation \
+      "lietorch @ git+https://github.com/princeton-vl/lietorch.git@e7df86554156b36846008d8ddbcc4d8521a16554"
+# The SLAM backend: build without a GPU present, for sm_120 only, and two PyTorch 2.7 fixes.
+RUN sed -i "s/^has_cuda = .*/has_cuda = True/" setup.py \
+ && sed -i '/"-gencode=arch=compute_[678][0-9],code=sm_[678][0-9]",$/d' setup.py \
+ && sed -i 's/"-O3",$/"-O3", "-gencode=arch=compute_120,code=sm_120",/' setup.py \
+ && grep -q sm_120 setup.py \
+ && sed -i "s/D11.type()/D11.scalar_type()/" mast3r_slam/backend/src/matching_kernels.cu \
+ && sed -i "s/torch::linalg::linalg_norm(dx, std::optional<c10::Scalar>(), {}, false, {})/dx.norm()/" mast3r_slam/backend/src/gn_kernels.cu \
+ && ! grep -n "linalg_norm\|\.type()" mast3r_slam/backend/src/*.cu \
+ && FORCE_CUDA=1 pip install --no-cache-dir --no-build-isolation -e .
+
+# The weights (fetched now: the live service has no network), checked against known hashes.
+RUN mkdir -p checkpoints && cd checkpoints \
+ && base=https://download.europe.naverlabs.com/ComputerVision/MASt3R \
+ && for f in MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth \
+      MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric_retrieval_trainingfree.pth \
+      MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric_retrieval_codebook.pkl; do wget -q $base/$f; done \
+ && printf '%s\n' \
+   "e28f91b488554653e2b46ddae9c78c1143e0bcb2e27d3e26cdb0b717f1568eb2  MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric.pth" \
+   "000a324f06f9369ab3e32d03dd4b8a838d48e98e3f3bf9d7dd034dce1bfd4c50  MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric_retrieval_trainingfree.pth" \
+   "700af9e31ad0ca6159955dc80b4fd6e14234780b52f5c91884f6553991933c1a  MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric_retrieval_codebook.pkl" \
+   | sha256sum -c -
+
+# uid 1000 owns /data in every CAST Live container
+RUN useradd --create-home --uid 1000 castlive && mkdir -p /data && chown castlive /data
+WORKDIR /app
+COPY pyproject.toml ./
+COPY castlive ./castlive
+RUN pip install --no-cache-dir --no-deps .
+# The MASt3R checkpoints are older pickles that PyTorch 2.6+ won't load by default; they are the
+# official files, checked above.
+ENV CASTLIVE_DATA=/data PYTHONUNBUFFERED=1 TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1
+USER castlive
+CMD ["castlive-live"]

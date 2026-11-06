@@ -49,6 +49,8 @@
   "warn_bright": "Too bright",
   "warn_blur": "Blurry: hold steadier",
   "warn_fast": "Slow down",
+  "warn_lost": "Lost track: go back a little, slowly",
+  "live_busy": "Live view is busy; recording works as normal",
   "warn_screen": "Keep the screen on and this page open.",
 
   "upload_title": "Sending",

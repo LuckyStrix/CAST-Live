@@ -138,6 +138,20 @@ class Tracker:
                 "updated": round(now)}
 
 
+LIVE_WAIT_MAX = 20 * 60  # longest a reconstruction waits for a live session (seconds)
+
+
+def wait_for_live(cfg: config.Config, sleep=time.sleep, clock=time.time) -> None:
+    """Someone is filming with the live view on: the GPU is theirs. Wait between stages."""
+    active = cfg.data / "live" / "active"
+    start = clock()
+    if active.exists():
+        log.info("waiting: live session %s is using the GPU", active.read_text(errors="replace"))
+    while active.exists() and clock() - start < LIVE_WAIT_MAX:
+        (cfg.data / "reconstructor.heartbeat").touch()
+        sleep(2)
+
+
 MAX_ATTEMPTS = 2  # a capture whose reconstruction kills the process (out of memory) twice fails
 CRASHED = "The 3D model could not be made because of a problem on the server. The organiser can try again."
 
@@ -173,7 +187,7 @@ def reconstruct(cfg: config.Config, cap) -> None:
 
     try:
         report = process(db.video_path(cfg.inbox, cid, cap["mime"]), meta, cap["mode"],
-                         cfg.runs / cid, progress)
+                         cfg.runs / cid, progress, wait=lambda: wait_for_live(cfg))
     except PipelineError as e:
         with db.connect(cfg.db) as con:
             db.set_capture(con, cid, status="failed", stage="", error=str(e), progress={})

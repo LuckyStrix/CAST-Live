@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 
 from castlive.common import config, db
 from castlive.common.web import add_security_headers
+from castlive.live import session as live
 
 
 def create_app(cfg: config.Config | None = None) -> FastAPI:
@@ -49,6 +50,10 @@ def create_app(cfg: config.Config | None = None) -> FastAPI:
     @app.get("/view")
     def viewer():
         return FileResponse(web / "studio" / "view.html")
+
+    @app.get("/live")
+    def live_page():
+        return FileResponse(web / "studio" / "live.html")
 
     @app.get("/api/status")
     def status(request: Request):
@@ -109,7 +114,8 @@ def create_app(cfg: config.Config | None = None) -> FastAPI:
                 dict(i, url=f"{base}/c/{i['token']}", active=db.invite_active(i))
                 for i in invites
             ],
-            "captures": [dict(c, meta=json.loads(c["meta"]), progress=json.loads(c["progress"]))
+            "captures": [dict(c, meta=json.loads(c["meta"]), progress=json.loads(c["progress"]),
+                              live=(live.session(cfg.data, c["id"]) / "control.json").exists())
                          for c in caps],
         }
 
@@ -160,6 +166,25 @@ def create_app(cfg: config.Config | None = None) -> FastAPI:
         if not path.exists():
             raise HTTPException(404, "not made yet")
         return path
+
+    def live_file(cid: str, name: str) -> Path:
+        if not db.is_capture_id(cid):
+            raise HTTPException(404, "no such capture")
+        path = live.session(cfg.data, cid) / "out" / name
+        if not path.exists():
+            raise HTTPException(404, "no live view yet")
+        return path
+
+    @app.get("/api/captures/{cid}/live")
+    def live_state(cid: str):
+        """The live tracking state while (and after) the phone films."""
+        return FileResponse(live_file(cid, "state.json"), media_type="application/json",
+                            headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/captures/{cid}/live/points")
+    def live_points(cid: str):
+        return FileResponse(live_file(cid, "points.bin"), media_type="application/octet-stream",
+                            headers={"Cache-Control": "no-store"})
 
     @app.get("/api/captures/{cid}/model.glb")
     def model(cid: str):

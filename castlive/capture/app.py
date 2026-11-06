@@ -1,10 +1,12 @@
 """The public capture site (behind Tailscale Funnel).
 
-It can do one thing: take a video from a phone that holds a valid invite token. It has no
+It takes a video (and, while filming, small live frames) from a phone that holds a valid invite
+token. It has no
 admin routes and reads nothing back except a capture's own upload status.
 """
 
 import asyncio
+import io
 import json
 import logging
 import os
@@ -13,16 +15,24 @@ import time
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from castlive.common import config, db
 from castlive.common.web import RateLimit, add_security_headers, client_ip
+from castlive.live import session as live
 
 log = logging.getLogger("uvicorn.error")
 MAX_META_BYTES = 64 * 1024
+
+# Live view: small JPEG frames from the phone while it films (see castlive/live/session.py).
+LIVE_FRAME_BYTES = 300_000
+LIVE_SIDE = 1024  # longest side of a live frame
+LIVE_GAP = 0.12  # seconds between frames: at most ~8 per second; faster ones are dropped
+IDLE_FINISH = 30  # after the phone says "end", seconds to wait for the final state
+LIVE_WAIT = 20  # seconds to wait for the capture record (the uploader makes it as filming starts)
 
 per_ip = RateLimit(count=900, seconds=60)  # ~15 requests/s: chunks plus status polls
 new_capture = RateLimit(count=20, seconds=3600)  # per invite
@@ -57,6 +67,22 @@ async def json_body(request: Request) -> dict:
     if not isinstance(body, dict):
         raise HTTPException(400, "bad JSON")
     return body
+
+
+def good_jpeg(raw: bytes) -> bool:
+    """A real JPEG of a sensible size, checked here so the GPU side only sees sound files."""
+    if len(raw) > LIVE_FRAME_BYTES or raw[:3] != b"\xff\xd8\xff":
+        return False
+    from PIL import Image
+
+    try:
+        with Image.open(io.BytesIO(raw)) as im:
+            if im.format != "JPEG" or max(im.size) > LIVE_SIDE or min(im.size) < 64:
+                return False
+            im.verify()
+        return True
+    except Exception:  # noqa: BLE001 - anything Pillow rejects is not a frame
+        return False
 
 
 def create_app(cfg: config.Config | None = None) -> FastAPI:
@@ -247,6 +273,105 @@ def create_app(cfg: config.Config | None = None) -> FastAPI:
             p = json.loads(cap["progress"] or "{}")
             out["progress"] = {k: p[k] for k in ("fraction", "eta_seconds") if k in p}
         return out
+
+    live_now: set[str] = set()  # one live session at a time: there is one GPU
+
+    @app.websocket("/live/{token}/{cid}")
+    async def live_socket(ws: WebSocket, token: str, cid: str):
+        """Phone -> JPEG frames (binary) and {"pass": n} / {"end": true} (text).
+        Server -> the live state (text JSON) and preview points (binary)."""
+        if not db.is_capture_id(cid) or not per_ip.allow(client_ip(ws)):
+            await ws.close(code=1008)
+            return
+        with db.connect(cfg.db) as con:
+            if db.valid_invite(con, token) is None:
+                await ws.close(code=1008)
+                return
+        await ws.accept()
+        for _ in range(LIVE_WAIT * 2):  # the capture record appears once uploading starts
+            with db.connect(cfg.db) as con:
+                cap = con.execute("SELECT status FROM captures WHERE id = ? AND invite = ?",
+                                  (cid, token)).fetchone()
+            if cap is not None:
+                break
+            await asyncio.sleep(0.5)
+        sess = live.session(cfg.data, cid)
+        if cap is None or cap["status"] != "uploading" or (sess / "control.json").exists():
+            await ws.send_json({"status": "refused"})
+            await ws.close()
+            return
+        if live_now:
+            await ws.send_json({"status": "busy"})
+            await ws.close()
+            return
+        live_now.add(cid)
+        control = {"pass": 1, "ended": False}
+        live.write_json(sess / "control.json", control)
+        started = time.monotonic()
+        limit = cfg.max_capture_seconds + 60
+
+        async def send_updates():
+            seen = {}
+            while True:
+                for name in ("state.json", "points.bin"):
+                    f = sess / "out" / name
+                    try:
+                        mtime = f.stat().st_mtime
+                    except OSError:
+                        continue
+                    if seen.get(name) != mtime:
+                        seen[name] = mtime
+                        data = await run_in_threadpool(f.read_bytes)
+                        if name == "state.json":
+                            await ws.send_text(data.decode())
+                        else:
+                            await ws.send_bytes(data)
+                if (sess / "out" / "done").exists():
+                    return
+                await asyncio.sleep(0.4)
+
+        sender = asyncio.create_task(send_updates())
+        seq, last = 0, 0.0
+        try:
+            while time.monotonic() - started < limit:
+                msg = await ws.receive()
+                if msg["type"] == "websocket.disconnect":
+                    break
+                if msg.get("bytes") is not None:
+                    now = time.monotonic()
+                    raw = msg["bytes"]
+                    if now - last < LIVE_GAP or not await run_in_threadpool(good_jpeg, raw):
+                        continue
+                    last = now
+                    name = live.frame_name(control["pass"], seq)
+                    await run_in_threadpool(live.write_atomic, sess / "in" / name, raw)
+                    seq += 1
+                elif msg.get("text") is not None:
+                    try:
+                        body = json.loads(msg["text"])
+                    except ValueError:
+                        continue
+                    if not isinstance(body, dict):
+                        continue
+                    if body.get("pass") == control["pass"] + 1 and body["pass"] <= 2:
+                        control["pass"] = body["pass"]
+                    if body.get("end"):
+                        control["ended"] = True
+                    live.write_json(sess / "control.json", control)
+                    if control["ended"]:
+                        await asyncio.wait_for(sender, timeout=IDLE_FINISH)
+                        break
+        except (WebSocketDisconnect, asyncio.TimeoutError, RuntimeError):
+            pass
+        finally:
+            control["ended"] = True
+            live.write_json(sess / "control.json", control)
+            sender.cancel()
+            live_now.discard(cid)
+            try:
+                await ws.close()
+            except RuntimeError:
+                pass
 
     return app
 

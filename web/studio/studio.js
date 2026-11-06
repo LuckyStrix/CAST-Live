@@ -113,9 +113,11 @@ function modelCell(c) {
     await api("POST", `/api/captures/${c.id}/retry`); showProject(current);
   } }, label);
   const log = el("a", { href: `/view-log?c=${c.id}`, target: "_blank" }, "log");
-  if (c.status === "done") return [el("a", { href: `/view?c=${c.id}`, target: "_blank" }, "view 3D"), " ", log, " ", retry("redo")];
+  const watch = c.live ? [" ", el("a", { href: `/live?c=${c.id}`, target: "_blank" }, "live")] : [];
+  if (c.status === "done") return [el("a", { href: `/view?c=${c.id}`, target: "_blank" }, "view 3D"), " ", log, " ", retry("redo"), ...watch];
   if (c.status === "failed") return [log, " ", retry("retry")];
   if (c.status === "processing") return [log];
+  if (c.live) return [el("a", { href: `/live?c=${c.id}`, target: "_blank" }, "watch live")];
   return [];
 }
 

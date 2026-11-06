@@ -2,6 +2,7 @@
 
 import { store, Uploader, serverStatus, projectInfo } from "./store.js";
 import { TurnTracker, QualityCheck } from "./guide.js";
+import { Live, drawSectors, drawCloud } from "./live.js";
 
 const $ = (id) => document.getElementById(id);
 const token = location.pathname.split("/").filter(Boolean).pop();
@@ -36,6 +37,8 @@ let pass = 1, startedAt = 0, timerId = 0, checkId = 0;
 const turn = new TurnTracker();
 let quality = null;
 let waitingFor = null; // capture id whose result the status screen shows
+let live = null; // live coverage while filming (null: off)
+const FULL = 15 / 16; // live coverage that counts as "all the way round"
 
 const uploader = new Uploader(onUpload);
 
@@ -211,6 +214,7 @@ $("rec").addEventListener("click", async () => {
     uploader.kick();
   };
   recorder.start(1000);
+  startLive();
   keepAwake();
   turn.begin();
   startedAt = performance.now();
@@ -220,6 +224,33 @@ $("rec").addEventListener("click", async () => {
   timerId = setInterval(tick, 250);
   checkId = setInterval(checkPicture, 500);
 });
+
+// --- Live coverage --------------------------------------------------------------------------
+function startLive() {
+  live = new Live($("preview"));
+  live.onUpdate = () => {
+    if (live.status === "busy") warn(t("live_busy"), 4000);
+    const cov = live.current();
+    $("top").classList.toggle("live", !!cov);
+    $("live-view").hidden = !cov;
+    if (cov) drawSectors($("sectors"), cov);
+  };
+  live.start(token, recording.id);
+  recording.meta.live = true;
+  requestAnimationFrame(function draw(time) {
+    if (!live) return;
+    const cov = live.current();
+    if (cov) drawCloud($("live-view"), live.points, cov, time);
+    requestAnimationFrame(draw);
+  });
+}
+
+function stopLive() {
+  if (live) live.stop();
+  live = null;
+  $("top").classList.remove("live");
+  $("live-view").hidden = true;
+}
 
 function elapsed() { return (performance.now() - startedAt) / 1000; }
 function mark(event) {
@@ -234,8 +265,12 @@ function tick() {
   $("timer").textContent = `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, "0")}`;
   // Without a gyroscope, assume about 40 s per loop.
   const passStart = recording.meta.markers.filter((m) => m.event === "start" || m.event === "pass2_start").pop().t;
-  const f = turn.hasSensor ? turn.fraction() : Math.min(1, (sec - passStart) / 40);
+  // Live coverage when the tracker has it; else the motion sensor; else the clock.
+  const cov = live && live.current();
+  const f = cov ? Math.min(1, cov.covered / FULL)
+    : turn.hasSensor ? turn.fraction() : Math.min(1, (sec - passStart) / 40);
   setRing(f);
+  if (cov && cov.placed === false) warn(t("warn_lost"));
   if (f >= 1 && pass === 1 && $("flip").hidden) endPass1();
   if (f >= 1 && pass === 2 && $("finish").hidden) {
     $("finish").hidden = false;
@@ -290,6 +325,7 @@ function startPass2() {
   pass = 2;
   pauseRoundButton();
   turn.reset();
+  if (live) live.setPass(2);
   $("flip").hidden = true;
   $("pass-label").textContent = t("pass_label", { n: 2 });
   $("hint").textContent = hintFor(2);
@@ -323,6 +359,7 @@ function stopRecording() {
   clearInterval(timerId);
   clearInterval(checkId);
   recorder.stop();
+  stopLive();
   if (wakeLock) wakeLock.release().catch(() => {});
   if (!recording.cancelled) closeCamera();
 }

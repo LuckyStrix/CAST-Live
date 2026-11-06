@@ -46,6 +46,10 @@ RUN mkdir -p checkpoints && cd checkpoints \
    "700af9e31ad0ca6159955dc80b4fd6e14234780b52f5c91884f6553991933c1a  MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric_retrieval_codebook.pkl" \
    | sha256sum -c -
 
+# MASt3R-SLAM imports the RealSense library (for its camera input), which needs libusb.
+RUN apt-get update && apt-get install -y --no-install-recommends libusb-1.0-0 \
+ && rm -rf /var/lib/apt/lists/*
+
 # uid 1000 owns /data in every CAST Live container
 RUN useradd --create-home --uid 1000 castlive && mkdir -p /data && chown castlive /data
 WORKDIR /app

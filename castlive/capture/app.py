@@ -1,8 +1,8 @@
 """The public capture site (behind Tailscale Funnel).
 
 It takes a video (and, while filming, small live frames) from a phone that holds a valid invite
-token. It has no
-admin routes and reads nothing back except a capture's own upload status.
+token. It has no admin routes and reads nothing back except a capture's own upload status and,
+while filming, its own live coverage.
 """
 
 import asyncio

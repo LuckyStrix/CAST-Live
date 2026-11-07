@@ -124,19 +124,19 @@ def main():
     cfg = config.load()
     root = S.root(cfg.data)
     root.mkdir(parents=True, exist_ok=True)
-    slam = None
-    log.info("live: waiting for sessions in %s", root)
+    from castlive.live.slam import Slam
+
+    # Load the model before anyone films: it takes from half a minute to a few minutes.
+    log.info("live: loading MASt3R-SLAM")
+    t = time.time()
+    slam = Slam()
+    log.info("live: ready in %.0f s; waiting for sessions in %s", time.time() - t, root)
     while True:
         (cfg.data / "live.heartbeat").touch()
         sess = waiting(root)
         if sess is None:
             time.sleep(0.3)
             continue
-        if slam is None:
-            from castlive.live.slam import Slam
-
-            log.info("live: loading MASt3R-SLAM")
-            slam = Slam()
         log.info("live: session %s", sess.name)
         S.write_atomic(root / "active", sess.name.encode())
         try:

@@ -51,6 +51,7 @@
   "warn_fast": "Slow down",
   "warn_lost": "Lost track: go back a little, slowly",
   "live_in_use": "No live view: someone else is filming with it. Recording works as normal",
+  "live_starting": "Live view starting (about 20 seconds). Keep filming: it catches up",
   "live_busy": "No live view: the server is busy making another model. Recording works as normal",
   "warn_screen": "Keep the screen on and this page open.",
 

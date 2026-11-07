@@ -7,6 +7,8 @@ passes are joined later by the full reconstruction.
 
 import logging
 import shutil
+import sys
+import threading
 import time
 from pathlib import Path
 
@@ -25,6 +27,7 @@ CAMERAS = 300  # recent camera positions sent
 WRITE_EVERY = 0.7  # seconds between updates
 EMPTY = b"\0\0\0\0"  # an overlay of 0 x 0 cells: nothing to paint
 REACH = 0.4  # object mode: paint only surface this close to the object (in orbit radii)
+UNLOAD_AFTER = 10 * 60  # idle this long after a session: quit, freeing ~3 GB RAM and ~4 GB GPU
 
 
 def decode(path: Path) -> np.ndarray | None:
@@ -136,34 +139,60 @@ def waiting(root: Path, clock=time.time) -> Path | None:
     return min(found)[1] if found else None
 
 
-def main():
+def load(beat: Path):
+    """MASt3R-SLAM, warmed up (10-20 s; minutes if the disk is busy). The heartbeat goes on, so the
+    reconstructor keeps waiting."""
+    from castlive.live.slam import Slam
+
+    stop = threading.Event()
+
+    def keep_beating():
+        while not stop.wait(5):
+            beat.touch()
+
+    threading.Thread(target=keep_beating, daemon=True).start()
+    try:
+        t = time.time()
+        slam = Slam()
+        # Warm up: the GPU's first frames run at about half speed (kernels load, tuning runs).
+        noise = np.random.default_rng(0).integers(0, 255, (5, 384, 512, 3), dtype=np.uint8)
+        slam.reset(noise[0])
+        for frame in noise:
+            slam.add(frame)
+        log.info("live: model ready in %.0f s", time.time() - t)
+        return slam
+    finally:
+        stop.set()
+
+
+def main(loader=load, clock=time.time, sleep=time.sleep):
+    """The model is loaded when someone starts filming, not before, and the service quits once
+    nobody has filmed for UNLOAD_AFTER (Docker starts it again, empty): an idle model would hold
+    GPU and system memory the reconstructor and the desktop need."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     cfg = config.load()
     root = S.root(cfg.data)
     root.mkdir(parents=True, exist_ok=True)
     (root / "active").unlink(missing_ok=True)  # left by a service that stopped mid-session
-    from castlive.live.slam import Slam
-
-    # Load the model before anyone films: it takes from half a minute to a few minutes.
-    log.info("live: loading MASt3R-SLAM")
-    t = time.time()
-    slam = Slam()
-    # Warm up: the GPU's first frames run at about half speed (kernels load, tuning runs).
-    noise = np.random.default_rng(0).integers(0, 255, (5, 384, 512, 3), dtype=np.uint8)
-    slam.reset(noise[0])
-    for frame in noise:
-        slam.add(frame)
-    log.info("live: ready in %.0f s; waiting for sessions in %s", time.time() - t, root)
+    beat = cfg.data / "live.heartbeat"
+    slam, idle_since = None, clock()
+    log.info("live: waiting for sessions in %s", root)
     while True:
-        (cfg.data / "live.heartbeat").touch()
+        beat.touch()
         sess = waiting(root)
         if sess is None:
-            time.sleep(0.3)
+            if slam is not None and clock() - idle_since > UNLOAD_AFTER:
+                log.info("live: idle for %d min: quitting to free memory", UNLOAD_AFTER // 60)
+                sys.exit(0)
+            sleep(0.3)
             continue
         log.info("live: session %s", sess.name)
         S.write_atomic(root / "active", sess.name.encode())
         try:
-            final = run(sess, slam)
+            if slam is None:
+                S.write_json(sess / "out" / "state.json", {"status": "starting"})
+                slam = loader(beat)
+            final = run(sess, slam, clock, sleep)
             log.info("live: session %s ended: %s", sess.name,
                      {k: (v["frames"], v["tracked"], v.get("covered")) for k, v in
                       final["passes"].items()})
@@ -173,3 +202,4 @@ def main():
             (sess / "out" / "done").touch()
         finally:
             (root / "active").unlink(missing_ok=True)
+            idle_since = clock()

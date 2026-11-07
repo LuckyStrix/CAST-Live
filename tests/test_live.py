@@ -130,6 +130,31 @@ def test_service_closes_stale_sessions(tmp_path):
     assert not (root / "old").exists()  # long finished: cleared away
 
 
+
+def test_service_loads_the_model_only_for_a_session_and_quits_when_idle(cfg, monkeypatch):
+    monkeypatch.setattr(service.config, "load", lambda: cfg)
+    now = [1000.0]
+    loads, seen_starting = [], []
+    sess = cfg.data / "live" / CID
+
+    def loader(beat):
+        seen_starting.append(json.loads((sess / "out" / "state.json").read_text())["status"])
+        loads.append(beat)
+        return FakeSlam()
+
+    def sleep(_):  # time passes; once, a phone starts filming and ends straight away
+        now[0] += 30
+        if now[0] == 1060:
+            S.write_atomic(sess / "in" / S.frame_name(1, 0), jpeg())
+            S.write_json(sess / "control.json", {"pass": 1, "ended": True})
+
+    with pytest.raises(SystemExit):
+        service.main(loader=loader, clock=lambda: now[0], sleep=sleep)
+    assert len(loads) == 1 and seen_starting == ["starting"]  # loaded once, for the session
+    assert (sess / "out" / "done").exists()
+    assert now[0] - 1060 > service.UNLOAD_AFTER  # quit only after being idle that long
+
+
 # --- The capture site's WebSocket ------------------------------------------------------------
 
 def start_capture(capture, token, cid=CID):

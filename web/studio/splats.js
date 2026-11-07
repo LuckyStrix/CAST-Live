@@ -28,10 +28,11 @@ const vertexShader = `
 const fragmentShader = `
   in vec2 local;
   in vec4 colour;
+  out vec4 fragColour;
   void main() {
     float alpha = colour.a * exp(-0.5 * dot(local, local));
     if (alpha < 1.0 / 255.0) discard;
-    gl_FragColor = vec4(colour.rgb * alpha, alpha); // premultiplied
+    fragColour = vec4(colour.rgb * alpha, alpha); // premultiplied
   }`;
 
 export async function loadSplats(url) {

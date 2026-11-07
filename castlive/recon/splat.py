@@ -39,6 +39,15 @@ class View:
     h: int
 
 
+def text_model(dense: Path) -> Path:
+    """The dense workspace's camera model as text (COLMAP writes binary; the pipeline converts
+    it, CAST runs keep a `sparse_txt` copy)."""
+    for name in ("sparse", "sparse_txt"):
+        if (dense / name / "cameras.txt").exists():
+            return dense / name
+    raise RuntimeError(f"no text camera model in {dense}")
+
+
 def read_views(sparse: Path) -> list[View]:
     """Cameras of an undistorted COLMAP text model (PINHOLE)."""
     cams = {}
@@ -212,8 +221,8 @@ def train(dense: Path, use_masks: bool, steps: int = STEPS, progress=lambda f: N
 
     dev = "cuda"
     torch.manual_seed(seed)
-    views = read_views(dense / "sparse")
-    xyz, rgb = read_points(dense / "sparse")
+    views = read_views(text_model(dense))
+    xyz, rgb = read_points(text_model(dense))
     photos = Photos(dense, views, use_masks)
     centres = centres_of(views)
     middle = centres.mean(0)
@@ -472,7 +481,7 @@ def make(dense: Path, out: Path, use_masks: bool, centre: np.ndarray, radius: fl
 
     out.mkdir(parents=True, exist_ok=True)
     if refuse:
-        views = read_views(dense / "sparse")
+        views = read_views(text_model(dense))
         params, photos, cams, report = (load_ply(out / "splat.ply"), Photos(dense, views, use_masks),
                                         cameras(views), {})
     else:
@@ -510,7 +519,7 @@ def main():
     ap.add_argument("--refuse", action="store_true", help="fuse the splat already in <out> again")
     ap.add_argument("--mesh-name", default="mesh.ply")
     a = ap.parse_args()
-    views = read_views(a.dense / "sparse")
+    views = read_views(text_model(a.dense))
     c = centres_of(views)
     centre = (np.array([float(x) for x in a.centre.split(",")]) if a.centre
               else M.look_at_point(c, np.array([v.w2c[2, :3] for v in views])))

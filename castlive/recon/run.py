@@ -9,6 +9,7 @@ gets a line per stage, colmap.log everything COLMAP prints.
 import contextlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -147,6 +148,11 @@ def process(video: Path, meta: dict, mode: str, run_dir: Path,
                              progress=colmap.span(p, 0.03, 0.1))
             report["crop"] = colmap.crop_to_masks(dense_dir, dense_dir / "masks", log)
             secs["masks_and_crop"] = time.time() - t
+        else:  # not cropped, so still COLMAP's binary model: the splat reads text
+            txt = colmap.to_text(dense_dir / "sparse", log)
+            for f in txt.iterdir():
+                shutil.copy(f, dense_dir / "sparse" / f.name)
+            shutil.rmtree(txt)
         centre, distance, _ = look()
         t = time.time()
         report["splat"] = run_splat(dense_dir, splat_dir, use_masks, centre, 0.8 * distance,

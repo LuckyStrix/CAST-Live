@@ -42,7 +42,7 @@ def measure(dense: Path, vertices: np.ndarray, faces: np.ndarray, use_masks: boo
 
     if use_masks:
         missed, extra = [], []
-        for v in splat.read_views(dense / "sparse"):
+        for v in splat.read_views(splat.text_model(dense)):
             w, h = max(1, v.w // SCALE), max(1, v.h // SCALE)
             K = v.K.copy()
             K[0] *= w / v.w
@@ -60,7 +60,7 @@ def measure(dense: Path, vertices: np.ndarray, faces: np.ndarray, use_masks: boo
             out["outline_missed_worst"] = round(float(np.max(missed)), 4)
             out["outline_extra"] = round(float(np.mean(extra)), 4)
 
-    pts = good_points(dense / "sparse")
+    pts = good_points(splat.text_model(dense))
     near = pts[np.all((pts >= lo - 0.02 * size) & (pts <= hi + 0.02 * size), axis=1)]
     if len(near) >= 20:
         d = np.abs(scene.compute_distance(o3d.core.Tensor(near.astype(np.float32))).numpy())

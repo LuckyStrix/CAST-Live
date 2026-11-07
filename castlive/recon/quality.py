@@ -1,7 +1,9 @@
 """How good is a mesh? Two checks that need nothing but the capture itself:
 
 - outline: rendered from every camera, how much of the object (its mask) the mesh fails to
-  cover (holes, missing parts) and how much it covers outside it (blobs, extra parts);
+  cover (holes, missing parts) and how much it covers outside it (blobs, extra parts). Mask
+  patches the mesh doesn't touch at all are other things the masking model caught (seen: spools
+  behind a box) and are left out; a missing part of the object is joined to the rest of it;
 - accuracy: how far COLMAP's best 3D points (seen from 3+ photos, small reprojection error)
   lie from the surface, as a fraction of the object's size.
 """
@@ -30,6 +32,7 @@ def good_points(sparse: Path) -> np.ndarray:
 def measure(dense: Path, vertices: np.ndarray, faces: np.ndarray, use_masks: bool) -> dict:
     import open3d as o3d
     from PIL import Image
+    from scipy.ndimage import label
 
     mesh = o3d.t.geometry.TriangleMesh()
     mesh.vertex.positions = o3d.core.Tensor(vertices.astype(np.float32))
@@ -52,11 +55,15 @@ def measure(dense: Path, vertices: np.ndarray, faces: np.ndarray, use_masks: boo
             hit = np.isfinite(scene.cast_rays(rays)["t_hit"].numpy())
             with Image.open(dense / "masks" / (v.name + ".png")) as m:
                 mask = np.asarray(m.convert("L").resize((w, h))) > 127
+            parts, _ = label(mask)
+            touched = np.unique(parts[hit & mask])
+            mask = np.isin(parts, touched[touched > 0])
             if mask.sum():
                 missed.append((mask & ~hit).sum() / mask.sum())
                 extra.append((hit & ~mask).sum() / mask.sum())
         if missed:
             out["outline_missed"] = round(float(np.mean(missed)), 4)  # holes: 0 is best
+            out["outline_missed_median"] = round(float(np.median(missed)), 4)
             out["outline_missed_worst"] = round(float(np.max(missed)), 4)
             out["outline_extra"] = round(float(np.mean(extra)), 4)
 

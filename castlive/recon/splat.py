@@ -400,10 +400,13 @@ def fuse(cams, depth_maps, masks, lo, hi, cells=GRID):
         use = inside & seen
         tsdf = torch.where(use, (tsdf * weight + sdf) / (weight + 1), tsdf)
         weight += use.float()
+    seen = (weight > 0).reshape(dims).cpu().numpy()
     vol = torch.where(weight > 0, tsdf, torch.ones_like(tsdf)).reshape(dims).cpu().numpy()
     if vol.min() >= 0 or vol.max() <= 0:
         raise PipelineError("No surface could be made from the model.")
-    verts, faces, _, _ = marching_cubes(vol, 0.0)
+    # Surface only between cells some camera saw: where the seen band behind a surface meets
+    # unseen space there is no evidence of anything, so no second (phantom) surface is made.
+    verts, faces, _, _ = marching_cubes(vol, 0.0, mask=seen)
     return verts * cell + (lo.cpu().numpy() + 0.5 * cell), faces[:, ::-1].copy()
 
 

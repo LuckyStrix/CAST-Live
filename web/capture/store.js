@@ -134,7 +134,6 @@ export class Uploader {
       await store.patchCapture(c.id, { created_on_server: true });
     }
     const keys = (await store.chunkKeys(c.id)).map(([, n]) => n).sort((a, b) => a - b);
-    let sent = c.total == null ? null : c.total - keys.length;
     let progressed = false;
     for (const n of keys) {
       if (!have.has(n)) {
@@ -143,8 +142,12 @@ export class Uploader {
       }
       await store.delChunk(c.id, n);
       progressed = true;
-      if (sent != null) sent++;
-      this.onProgress({ id: c.id, sent, total: c.total, state: "sending" });
+      // Read the total afresh: filming may have stopped (and the total become known) since this
+      // pass started, and the bar should move straight away rather than sit at 0%.
+      const now = await store.getCapture(c.id);
+      const total = now ? now.total : null;
+      const left = total == null ? 0 : (await store.chunkKeys(c.id)).length;
+      this.onProgress({ id: c.id, sent: total == null ? null : total - left, total, state: "sending" });
     }
     if (c.total != null) {
       try {

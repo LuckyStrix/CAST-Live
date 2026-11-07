@@ -210,7 +210,7 @@ $("rec").addEventListener("click", async () => {
     recording.meta.sensor = turn.hasSensor;
     recording.meta.heading = turn.samples;
     await store.patchCapture(recording.id, { total: n, meta: recording.meta });
-    setUpload(0);
+    setUpload(n ? 1 - (await store.chunkKeys(recording.id)).length / n : 0); // much went while filming
     show("upload");
     uploader.kick();
   };

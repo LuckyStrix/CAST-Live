@@ -31,6 +31,7 @@ NCC_WEIGHT, GEO_WEIGHT = 0.15, 0.03
 MIN_TRACK, MAX_ERROR_PX = 3, 1.5  # COLMAP points trusted as measurements
 POINT_HOLD_OUT = 5
 ANCHOR_CLAMP = 0.05  # depth error (fraction) above which a point stops pulling: outliers
+PLAIN_CONTRAST = 0.015  # local photo contrast (grey std, 5x5) below which a patch counts as plain
 
 
 @dataclass
@@ -266,9 +267,33 @@ def anchor_loss(colours, alphas, pix, z, mask):
     return ((depth[ok] - z[ok]).abs() / z[ok]).clamp(max=ANCHOR_CLAMP).mean()
 
 
+def plain_smoothness(normals, alphas, grey_img, mask):
+    """Neighbouring pixels' normals should agree where the photo is plain (no texture to tell
+    the shape): weight exp(-(contrast / PLAIN_CONTRAST)^2), so wherever the photo shows
+    detail (edges, signs, text) the surface is left free."""
+    import torch
+    import torch.nn.functional as F
+
+    g = grey_img[None, None]
+    mean = F.avg_pool2d(g, 5, 1, 2)
+    contrast = (F.avg_pool2d(g * g, 5, 1, 2) - mean ** 2).clamp_min(0).sqrt()[0, 0]
+    weight = torch.exp(-(contrast / PLAIN_CONTRAST) ** 2)
+    ok = alphas[0, ..., 0].detach() > 0.5
+    if mask is not None:
+        ok &= mask
+    n = normals[0]
+    total, count = 0.0, 0
+    for a, b in (((slice(None), slice(1, None)), (slice(None), slice(None, -1))),  # across
+                 ((slice(1, None),), (slice(None, -1),))):  # down
+        valid = ok[a] & ok[b]
+        total = total + ((n[a] - n[b]).abs().sum(-1) * weight[a] * weight[b])[valid].sum()
+        count += int(valid.sum())
+    return total / max(count, 1)
+
+
 def train(dense: Path, use_masks: bool, steps: int = STEPS, progress=lambda f: None,
           normal_weight: float = 0.05, seed: int = 0, use_multiview: bool = True,
-          anchor_weight: float = 0.0):
+          anchor_weight: float = 0.0, smooth_weight: float = 0.0):
     """Train the splat. Returns (params, photos, cameras, report)."""
     import torch
     from gsplat.strategy import DefaultStrategy
@@ -314,7 +339,7 @@ def train(dense: Path, use_masks: bool, steps: int = STEPS, progress=lambda f: N
     near = neighbours(views)
     near = [[j for j in js if j not in held] for js in near]  # held-out photos stay unseen
     trng = torch.Generator(device=dev).manual_seed(seed)
-    report_mv = {"photo": [], "geo": [], "anchor": []}
+    report_mv = {"photo": [], "geo": [], "anchor": [], "smooth": []}
     held_set = set(held)  # held-out photos' points stay unseen too
     anchor_t = [(torch.tensor(p, dtype=torch.float32, device=dev),
                  torch.tensor(z, dtype=torch.float32, device=dev)) if k not in held_set else None
@@ -342,6 +367,11 @@ def train(dense: Path, use_masks: bool, steps: int = STEPS, progress=lambda f: N
             loss = loss + normal_weight * (1 - (normals[0] * nd).sum(-1)).mean()
         if step >= DISTORT_FROM * steps:
             loss = loss + 1e-2 * distort.mean()
+        if smooth_weight and step >= NORMAL_FROM * steps:
+            mask = None if photos.masks[i] is None else torch.from_numpy(photos.masks[i]).to(dev)
+            sm = plain_smoothness(normals, alphas, grey(photos.images[i]), mask)
+            loss = loss + smooth_weight * sm
+            report_mv["smooth"].append(float(sm))
         if anchor_weight and anchor_t[i] is not None and len(anchor_t[i][1]):
             mask = None if photos.masks[i] is None else torch.from_numpy(photos.masks[i]).to(dev)
             a = anchor_loss(colours, alphas, *anchor_t[i], mask)
@@ -589,6 +619,7 @@ def main():
     ap.add_argument("--normal-weight", type=float, default=0.05)
     ap.add_argument("--no-multiview", action="store_true")
     ap.add_argument("--anchor-weight", type=float, default=0.0)
+    ap.add_argument("--smooth-weight", type=float, default=0.0)
     ap.add_argument("--depth", choices=["median", "expected"], default="median")
     ap.add_argument("--refuse", action="store_true", help="fuse the splat already in <out> again")
     ap.add_argument("--mesh-name", default="mesh.ply")
@@ -604,7 +635,7 @@ def main():
         v, f, col, report = make(a.dense, a.out, not a.no_masks, centre, radius, a.steps, show,
                                  depth=a.depth, refuse=a.refuse, normal_weight=a.normal_weight,
                                  use_multiview=not a.no_multiview,
-                                 anchor_weight=a.anchor_weight)
+                                 anchor_weight=a.anchor_weight, smooth_weight=a.smooth_weight)
         m = M.from_arrays(v, f, col)
     except PipelineError as e:
         print(f"PipelineError: {e}", flush=True)

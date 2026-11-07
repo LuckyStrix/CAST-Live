@@ -104,3 +104,21 @@ def test_viewer_file_has_placed_discs(tmp_path):
     assert np.allclose(d[0, 4:7], [0, 0.4, 0], atol=1e-6)  # x axis turned onto y, doubled
     assert np.allclose(d[0, 8:11], [-0.2, 0, 0], atol=1e-6)
     assert np.isclose(d[0, 7], 1.0) and np.isclose(d[0, 11], 0.5)
+
+
+def test_exposure_gains_even_out_the_photos(tmp_path):
+    pytest.importorskip("open3d")
+    from PIL import Image
+
+    from castlive.recon import texture
+
+    verts = np.array([[-1, -1, 0], [1, -1, 0], [1, 1, 0], [-1, 1, 0]], float)
+    faces = np.array([[0, 1, 2], [0, 2, 3]])  # a square facing +z
+    views = []
+    for k, grey in enumerate([100, 150, 120]):  # the same surface, three exposures
+        w2c = np.diag([1.0, -1.0, -1.0, 1.0])  # above the square, looking down
+        w2c[:3, 3] = [0.1 * k, 0, 3]
+        views.append(splat.View(f"v{k}.jpg", w2c, np.array([[200, 0, 200], [0, 200, 200], [0, 0, 1]], float), 400, 400))
+        Image.new("RGB", (400, 400), (grey, grey, grey)).save(tmp_path / f"v{k}.jpg")
+    g = texture.exposure_gains(tmp_path, views, verts, faces)
+    assert np.allclose([g[f"v{k}.jpg"][0] for k in range(3)], [1.2, 0.8, 1.0], atol=0.02)

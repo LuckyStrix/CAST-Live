@@ -23,13 +23,15 @@ Add every new dependency or model here **before** using it.
 | three.js r170 (vendored) | studio viewer | MIT | in use |
 | ALIKED / LightGlue (COLMAP's ONNX models) | features, matching | BSD-3 / Apache-2.0 | in use |
 | mvs-texturing (texrecon) with mve, rayint, mapmap_cpu; Eigen (MPL-2-only) | texture from the photos | BSD-3 / MPL-2.0 | in use |
-| PyTorch 2.7 (CUDA 12.8 image) | running the learned models | BSD-3 | in use (live image) |
+| PyTorch 2.7 (CUDA 12.8 image) | running the learned models, splat training | BSD-3 | in use (live and reconstructor images) |
 | **MASt3R-SLAM** (windows branch, 6717231) | live tracking and coverage | **CC BY-NC-SA 4.0** — NC | in use; patched at build time, its code is called, not copied |
 | **MASt3R / DUSt3R checkpoints** (Naver) | MASt3R-SLAM's model | **CC BY-NC-SA 4.0**; trained on data with non-commercial terms (CHECKPOINTS_NOTICE) — NC | in use, hashes pinned |
 | lietorch (e7df865) | Lie groups for MASt3R-SLAM | BSD-3 | in use |
 | **VGGT-1B** (Meta) | fast first camera poses per pass | **VGGT licence, non-commercial** — NC | candidate (phase 4) |
-| gsplat | gaussian splat training (MCMC, 2DGS) | Apache-2.0 | planned (phase 4) |
-| **PGSR** / **MILo** | mesh from the splats | **Inria-style, non-commercial** — NC | candidate (phase 4), check each |
+| gsplat 1.5.3 | gaussian splat training (2DGS) | Apache-2.0 | in use; built from the tagged source |
+| scikit-image | marching cubes for the splat's surface | BSD-3 | in use |
+| MoGe-2 (Microsoft) | learned normals as a prior | MIT (code and weights) | tried, not used: made surfaces worse |
+| **PGSR** / **MILo** | mesh from the splats | **Inria-style, non-commercial** — NC | not used: their multi-view idea is reimplemented in our own code (`castlive/recon/splat.py`) |
 | Spark (sparkjs) | splat viewer in the studio | MIT (check 2.0) | planned (phase 5) |
 | SPZ (Niantic) | compressed splat files | MIT | planned (phase 4) |
 

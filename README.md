@@ -9,11 +9,12 @@ setup, and rebuilds the modelling around newer learned tools (MASt3R-SLAM, VGGT,
 splatting) whose licences allow research use only. See [LICENSES.md](LICENSES.md) and the plan in
 [PLAN.md](PLAN.md).
 
-**Status:** phase 3 — **live coverage works**: while you film, the phone sends small frames
-(about 4 a second) to the GPU, MASt3R-SLAM tracks them, and the phone's ring lights up each
-direction filmed so far, with a small turning preview of the points. "Turn it over" appears when
-the round is complete. The studio can watch the same session (`watch live` on the capture). The
-final model is still CAST's photogrammetry (`castlive/recon/`); gaussian splats come next.
+**Status:** phase 4 — **live coverage** while you film (the phone's ring lights up each
+direction MASt3R-SLAM has seen; "Turn it over" when the round is complete; studio can watch),
+and a **gaussian-splat surface**: after upload, COLMAP places the photos, a 2D gaussian splat is
+trained on them with multi-view consistency, and its depth is fused into a closed, textured
+mesh. Each model gets a measured quality report in studio (outline holes from every camera,
+distance to COLMAP's points, splat accuracy on photos it never saw). Next: splat viewer in studio.
 
 ```
 phone ──(invite link, Tailscale Funnel)──► capture site ──► worker ──► reconstructor ──► studio (your tailnet)

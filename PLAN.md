@@ -75,7 +75,19 @@ Reused as-is from CAST: invite/project model, chunked resumable upload, CSP head
    and 63/65 frames placed, ~4 frames/s, coverage 100% on both sides, "Turn it over" shown by
    coverage. Live positions are taken from keyframe-corrected poses (tracked poses drift).
    Original scope: phone WebSocket (invite-checked, rate-limited, max frame size, session timeout) → file hand-off → `live` SLAM → coverage + points back to phone and to a studio live page. Phone records full-res video at the same time and uploads it after (existing upload path).
-4. **Final reconstruction:** poses (VGGT/SLAM first guess per pass → COLMAP join and bundle adjustment at full res, turn-over check from CAST) → gsplat (MCMC, masked for object mode) → SPZ; PGSR mesh → texrecon → GLB. Report: timings, join quality, coverage holes.
+4. **Final reconstruction — done (7 Nov 2026):** poses stay CAST's COLMAP + turn-over check
+   (learned joins failed in phase 1). COLMAP's dense stereo is replaced by a **2DGS splat**
+   (gsplat, 7000 steps, masked) with PGSR-style multi-view terms in our own code (patch NCC
+   through each pixel's plane into neighbouring photos, forward-backward depth check). Its
+   median depth from every camera is fused into a GPU TSDF (off-mask pixels carve), marching
+   cubes only between seen cells, largest piece, 500k triangles → texrecon → GLB. Every model
+   gets a quality report: outline holes/extras vs the masks from every camera, distance of
+   COLMAP's best points to the surface, held-out photo PSNR.
+   Box (same frames, RTX 5060 Ti): outline missed 32.9% → 0.8%, dense-MVS points to surface
+   median 0.14% of size, stage ~8 min instead of 55. Also checked on a second box scan, CAST's
+   box and an in-the-ground mouse (closed, where CAST's mesh had holes). Tried and dropped:
+   MoGe-2 normal prior (terracing), expected depth (embosses printed ink). Open: faint false
+   relief where only colour changes (ink, printed text) on plain faces; SPZ export (phase 5).
 5. **Studio viewers:** Spark splat viewer with the mesh viewer as a toggle (raking light stays on the mesh); downloads SPZ, PLY, GLB.
 6. **Polish:** quick preview splat after Stop; Android + iPhone tests; docs for untrained users; scale card later.
 

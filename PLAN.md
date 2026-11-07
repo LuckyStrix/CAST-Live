@@ -80,14 +80,24 @@ Reused as-is from CAST: invite/project model, chunked resumable upload, CSP head
    (gsplat, 7000 steps, masked) with PGSR-style multi-view terms in our own code (patch NCC
    through each pixel's plane into neighbouring photos, forward-backward depth check). Its
    median depth from every camera is fused into a GPU TSDF (off-mask pixels carve), marching
-   cubes only between seen cells, largest piece, 500k triangles → texrecon → GLB. Every model
-   gets a quality report: outline holes/extras vs the masks from every camera, distance of
-   COLMAP's best points to the surface, held-out photo PSNR.
-   Box (same frames, RTX 5060 Ti): outline missed 32.9% → 0.8%, dense-MVS points to surface
-   median 0.14% of size, stage ~8 min instead of 55. Also checked on a second box scan, CAST's
-   box and an in-the-ground mouse (closed, where CAST's mesh had holes). Tried and dropped:
-   MoGe-2 normal prior (terracing), expected depth (embosses printed ink). Open: faint false
-   relief where only colour changes (ink, printed text) on plain faces; SPZ export (phase 5).
+   cubes only between seen cells, faces wound outward, largest piece, 500k triangles →
+   texrecon → GLB. Every model gets a quality report: outline holes/extras vs the masks from
+   every camera, distance of COLMAP's best on-object points to the surface, held-out PSNR.
+   - End to end (box 6173902f, RTX 5060 Ti): **59 min instead of 2 h** (splat stage 12 min vs
+     90 min dense stereo); outline missed 0.6% (old: 33% on the first box); COLMAP points
+     median 0.04%, p90 0.14% of the object's size; complete texture where CAST had holes
+     (one side face still shows some blotchy texture from shadowed photos).
+   - **Plain faces bulged** (several % of size) until the multi-view patches were made wider
+     (samples 2 px apart) and used down to faint contrast (grain of the card), weight 0.5.
+     Checked on four captures: better on both sharp box scans (against the old dense MVS
+     cloud: median 0.145 → 0.120%, p99 1.5 → 1.1%) and the in-ground mouse, neutral on CAST's
+     blurry box, whose top still dips where only glossy ink and blur are seen. COLMAP's own
+     points on those faces are flat to 0.04%, so it is the splat, not the calibration.
+   - Tried and dropped (no gain): MoGe-2 normal prior (terracing), expected depth (embosses
+     ink), depth anchors at COLMAP points (they already fit; the error sits between them),
+     edge-aware smoothness where the photo is plain (left the bulges).
+   - Open: faint relief along glossy ink; SPZ export (phase 5); GPU memory when live SLAM is
+     idle (its model stays loaded, ~4 GB).
 5. **Studio viewers:** Spark splat viewer with the mesh viewer as a toggle (raking light stays on the mesh); downloads SPZ, PLY, GLB.
 6. **Polish:** quick preview splat after Stop; Android + iPhone tests; docs for untrained users; scale card later.
 

@@ -17,8 +17,10 @@ TEXRECON = "texrecon"
 GAIN_SAMPLES = 20_000  # surface points used to compare the photos' brightness
 GAIN_SCALE = 4  # photos are read at a quarter size for that (colour statistics only)
 GAIN_MIN_SEEN = 200  # a photo seeing fewer of the points keeps its own brightness
-EVEN = False  # even out the photos' brightness before texturing (being tested)
-OUTLIERS = "none"  # texrecon's outlier removal: none, gauss_damping, gauss_clamping
+# Both on: on two box scans the texture then matched each photo (up to its exposure) 16-22%
+# better, with no loss of sharpness (each patch still comes from one photo).
+EVEN = True  # even out the photos' brightness and colour before texturing
+OUTLIERS = "gauss_clamping"  # texrecon drops photos whose colour for a patch disagrees (shadows)
 
 
 def exposure_gains(images: Path, views, vertices: np.ndarray, faces: np.ndarray,

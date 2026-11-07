@@ -363,6 +363,7 @@ def main():
     ap.add_argument("--centre", help="x,y,z of what was filmed (default: where cameras look)")
     ap.add_argument("--radius", type=float, help="how far round it to make the surface")
     ap.add_argument("--progress", action="store_true", help="print 'progress <fraction>' lines")
+    ap.add_argument("--check", action="store_true", help="measure the mesh (quality.py)")
     a = ap.parse_args()
     views = read_views(a.dense / "sparse")
     c = centres_of(views)
@@ -379,6 +380,10 @@ def main():
         sys.exit(2)
     M.save_ply(m, a.out / "mesh.ply")
     report["mesh"] = m.stats
+    if a.check:
+        from castlive.recon import quality
+
+        report["quality"] = quality.measure(a.dense, m.vertices, m.faces, not a.no_masks)
     report["total_seconds"] = round(time.time() - t)
     (a.out / "report.json").write_text(json.dumps(report, indent=1))
     print(json.dumps(report), flush=True)

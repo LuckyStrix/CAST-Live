@@ -330,14 +330,14 @@ def save_ply(params, path: Path) -> None:
 
 
 def make(dense: Path, out: Path, use_masks: bool, centre: np.ndarray, radius: float,
-         steps: int = STEPS, progress=lambda f: None):
+         steps: int = STEPS, progress=lambda f: None, **options):
     """Train, save the splat (out/splat.ply) and fuse the surface. Returns (vertices, faces,
     colours, report)."""
     import torch
 
     out.mkdir(parents=True, exist_ok=True)
     params, photos, cams, report = train(
-        dense, use_masks, steps, progress=lambda f: progress(0.9 * f))
+        dense, use_masks, steps, progress=lambda f: progress(0.9 * f), **options)
     save_ply(params, out / "splat.ply")
     t = time.time()
     lo, hi = bounds(params, centre, radius)
@@ -364,6 +364,7 @@ def main():
     ap.add_argument("--radius", type=float, help="how far round it to make the surface")
     ap.add_argument("--progress", action="store_true", help="print 'progress <fraction>' lines")
     ap.add_argument("--check", action="store_true", help="measure the mesh (quality.py)")
+    ap.add_argument("--normal-weight", type=float, default=0.05)
     a = ap.parse_args()
     views = read_views(a.dense / "sparse")
     c = centres_of(views)
@@ -373,7 +374,8 @@ def main():
     show = (lambda f: print(f"progress {f:.4f}", flush=True)) if a.progress else (lambda f: None)
     t = time.time()
     try:
-        v, f, col, report = make(a.dense, a.out, not a.no_masks, centre, radius, a.steps, show)
+        v, f, col, report = make(a.dense, a.out, not a.no_masks, centre, radius, a.steps, show,
+                                 normal_weight=a.normal_weight)
         m = M.from_arrays(v, f, col)
     except PipelineError as e:
         print(f"PipelineError: {e}", flush=True)

@@ -27,9 +27,12 @@ NORMAL_FROM = 0.2  # fraction of training after which surface normals must agree
 DISTORT_FROM = 0.1
 MULTIVIEW_FROM = 0.3  # then: patches must match between neighbouring photos (PGSR's idea)
 MULTIVIEW_PIXELS = 4096  # patch centres checked per step
-NCC_WEIGHT, GEO_WEIGHT = 0.15, 0.03
-PATCH_STEP = 1  # pixels between patch samples (7x7 samples)
-FLAT_STD = 0.01  # patches with less grey contrast than this carry no evidence
+NCC_WEIGHT, GEO_WEIGHT = 0.5, 0.03
+# Patches of 7x7 samples 2 px apart (over a 2 px blur), used down to faint contrast: plain card
+# or clay still has fibres and grain. Adjacent samples with a 0.01 threshold skipped the plain
+# faces of a box, which then bulged by several percent of its size.
+PATCH_STEP = 2
+FLAT_STD = 0.005  # patches with less grey contrast than this carry no evidence
 MIN_TRACK, MAX_ERROR_PX = 3, 1.5  # COLMAP points trusted as measurements
 
 

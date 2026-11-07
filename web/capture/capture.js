@@ -2,7 +2,7 @@
 
 import { store, Uploader, serverStatus, projectInfo } from "./store.js";
 import { TurnTracker, QualityCheck } from "./guide.js";
-import { Live, drawSectors, drawCloud } from "./live.js";
+import { Live, drawSectors, drawOverlay } from "./live.js";
 
 const $ = (id) => document.getElementById(id);
 const token = location.pathname.split("/").filter(Boolean).pop();
@@ -233,24 +233,18 @@ function startLive() {
     if (live.status === "busy") warn(t("live_busy"), 4000);
     const cov = live.current();
     $("top").classList.toggle("live", !!cov);
-    $("live-view").hidden = !cov;
     if (cov) drawSectors($("sectors"), cov);
+    drawOverlay($("coverage"), live);
   };
   live.start(token, recording.id);
   recording.meta.live = true;
-  requestAnimationFrame(function draw(time) {
-    if (!live) return;
-    const cov = live.current();
-    if (cov) drawCloud($("live-view"), live.points, cov, time);
-    requestAnimationFrame(draw);
-  });
 }
 
 function stopLive() {
   if (live) live.stop();
   live = null;
   $("top").classList.remove("live");
-  $("live-view").hidden = true;
+  $("coverage").hidden = true;
 }
 
 function elapsed() { return (performance.now() - startedAt) / 1000; }
@@ -274,6 +268,7 @@ function tick() {
   setRing(f);
   const now = live && live.info();
   if (now && now.placed === false) warn(t("warn_lost"));
+  if (live) drawOverlay($("coverage"), live); // hides it once it is stale
   if (f >= 1 && pass === 1 && $("flip").hidden) endPass1();
   if (f >= 1 && pass === 2 && $("finish").hidden) {
     $("finish").hidden = false;

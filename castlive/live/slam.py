@@ -6,6 +6,7 @@ set), so none of its code is copied here. Needs the `live` image (docker/Dockerf
 """
 
 import os
+import struct
 import sys
 from pathlib import Path
 
@@ -14,6 +15,42 @@ import numpy as np
 ROOT = Path(os.environ.get("CASTLIVE_MAST3R_SLAM", "/opt/m3slam"))
 CONF_MIN = 1.5  # MASt3R-SLAM's own default for saving points
 SIZE = 512
+OVERLAY_STEP = 4  # one overlay cell per 4x4 pixels of the live frame
+
+
+class SeenFrom:
+    """Which directions each bit of surface has been filmed from: the space is cut into small
+    cubes, the directions into 32 even bins, and the (cube, bin) pairs seen are kept, sorted,
+    on the GPU. Coverage of a point = how many bins its cube has been seen from."""
+
+    BITS = 19  # per axis: +-262k cubes
+
+    def __init__(self, torch, device, cube: float):
+        self.torch, self.cube = torch, cube
+        n = 32  # directions: a Fibonacci sphere
+        i = torch.arange(n, dtype=torch.float32, device=device) + 0.5
+        z, a = 1 - 2 * i / n, i * np.pi * (3 - 5 ** 0.5)
+        r = (1 - z * z).sqrt()
+        self.dirs = torch.stack([r * a.cos(), r * a.sin(), z], 1)
+        self.pairs = torch.zeros(0, dtype=torch.int64, device=device)
+
+    def _keys(self, pts):
+        off = 1 << (self.BITS - 1)
+        q = (pts / self.cube).floor().long().clamp(-off, off - 1) + off
+        return (q[:, 0] << (2 * self.BITS)) | (q[:, 1] << self.BITS) | q[:, 2]
+
+    def add(self, pts, centre) -> None:
+        """Points (N, 3) seen from a camera at `centre` (3,)."""
+        d = pts - centre
+        d = d / d.norm(dim=1, keepdim=True).clamp_min(1e-9)
+        b = (d @ self.dirs.T).argmax(1)
+        new = self.torch.unique(self._keys(pts) * 32 + b)
+        self.pairs = self.torch.unique(self.torch.cat([self.pairs, new]))
+
+    def count(self, pts):
+        k = self._keys(pts) * 32
+        return (self.torch.searchsorted(self.pairs, k + 32)
+                - self.torch.searchsorted(self.pairs, k))
 
 
 class Slam:
@@ -50,6 +87,8 @@ class Slam:
         self.m3.retrieval_database = load_retriever(self.model)
         self.n = 0
         self.track: list = []  # per placed frame: (its keyframe, pose relative to it)
+        self.seen = None  # SeenFrom, made with the first frame (it sets the cube size)
+        self.last = None  # the last placed frame
 
     def add(self, rgb: np.ndarray) -> bool:
         """Track one RGB uint8 frame (same size as the first). True if it was placed."""
@@ -76,6 +115,7 @@ class Slam:
             states.set_mode(Mode.TRACKING)
             states.set_frame(frame)
             self.track.append((0, lietorch.Sim3.Identity(1, device=self.device).data))
+            self._seen(frame)
             return True
         if mode == Mode.TRACKING:
             new_kf, _, try_reloc = self.tracker.track(frame)
@@ -92,11 +132,38 @@ class Slam:
         if placed:  # remember it relative to its keyframe, which the backend keeps correcting
             kf = lietorch.Sim3(keyframes.T_WC[ref])
             self.track.append((ref, (kf.inv() * frame.T_WC).data))
+            self._seen(frame)
         if new_kf:
             keyframes.append(frame)
             states.queue_global_optimization(len(keyframes) - 1)
         self.m3.run_backend(states, keyframes)
         return placed and states.get_mode() == Mode.TRACKING
+
+    def _world(self, frame, step: int):
+        """The frame's confident points in the world, every `step` pixels: (points, mask)."""
+        h, w = (int(v) for v in frame.img_shape.flatten()[:2])
+        X = frame.X_canon.reshape(h, w, 3)[::step, ::step]
+        ok = (frame.get_average_conf().reshape(h, w)[::step, ::step] > CONF_MIN)
+        pts = frame.T_WC.act(X.reshape(-1, 3)).reshape(-1, 3)
+        return pts, ok.reshape(-1), X.shape[:2]
+
+    def _seen(self, frame) -> None:
+        self.last = frame
+        pts, ok, _ = self._world(frame, 2)
+        if self.seen is None:
+            depth = frame.X_canon.norm(dim=-1).median().item()
+            self.seen = SeenFrom(self.torch, self.device, cube=depth / 80)
+        centre = frame.T_WC.data.reshape(-1)[:3]
+        self.seen.add(pts[ok], centre)
+
+    def overlay(self) -> bytes:
+        """How well each part of the last placed frame has been covered: uint16 width, height,
+        then one byte per cell (row by row): 0 = no surface found, else directions seen from."""
+        if self.last is None:
+            return struct.pack("<HH", 0, 0)
+        pts, ok, (gh, gw) = self._world(self.last, OVERLAY_STEP)
+        n = self.seen.count(pts).clamp(0, 255) * ok
+        return struct.pack("<HH", gw, gh) + n.to(self.torch.uint8).cpu().numpy().tobytes()
 
     def cameras(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Every placed frame's centre, viewing direction and image-up direction, from its

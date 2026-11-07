@@ -1,23 +1,21 @@
 // Live coverage while filming. Small frames go to the server, where MASt3R-SLAM tracks them;
-// back come the directions covered so far (16 sectors round the object) and a preview point
-// cloud. If the live view can't run (busy, offline), recording carries on exactly as before.
+// back come the directions covered so far (16 sectors round the object) and, for the latest
+// frame, how well each part of the picture has been filmed, painted over the camera view.
+// If the live view can't run (busy, offline), recording carries on exactly as before.
 
 const SIDE = 512; // longest side of a live frame (the tracker works at 512)
 const EVERY_MS = 220; // ~4.5 frames a second
 const MAX_BUFFERED = 300_000; // bytes queued on a slow link: skip frames rather than lag
 export const SECTORS = 16;
-const UNITS = 8000; // castlive/live/session.py POINT_UNITS
-
-export function unpack(buf) {
-  const n = new DataView(buf).getUint32(0, true);
-  return { n, xyz: new Int16Array(buf, 4, 3 * n), rgb: new Uint8Array(buf, 4 + 6 * n, 3 * n) };
-}
+// Overlay colours by how many directions a spot has been filmed from (castlive/live/slam.py).
+const PAINT = [null, [230, 60, 60], [240, 170, 40], [40, 200, 110]]; // 1, 2, 3+ directions
+const ALPHA = 120;
 
 export class Live {
   constructor(video) {
     this.video = video;
     this.canvas = document.createElement("canvas");
-    this.ws = null; this.state = null; this.stateAt = 0; this.points = null;
+    this.ws = null; this.state = null; this.stateAt = 0; this.overlay = null; this.overlayAt = 0;
     this.pass = 1; this.status = "off"; this.timer = 0; this.sending = false;
     this.onUpdate = () => {};
   }
@@ -34,7 +32,7 @@ export class Live {
         try { s = JSON.parse(e.data); } catch { return; }
         if (s.status === "busy" || s.status === "refused") this.status = s.status;
         else { this.state = s; this.stateAt = Date.now(); }
-      } else this.points = unpack(e.data);
+      } else { this.overlay = e.data; this.overlayAt = Date.now(); }
       this.onUpdate();
     };
     this.ws.onclose = () => {
@@ -47,10 +45,11 @@ export class Live {
   send() {
     const v = this.video, ws = this.ws;
     if (this.sending || !ws || ws.readyState !== 1 || ws.bufferedAmount > MAX_BUFFERED || !v.videoWidth) return;
+    // Sides in multiples of 16: the tracker would crop otherwise, and the overlay must line up.
     const k = SIDE / Math.max(v.videoWidth, v.videoHeight);
     const c = this.canvas;
-    c.width = Math.round(v.videoWidth * k);
-    c.height = Math.round(v.videoHeight * k);
+    c.width = Math.max(16, Math.round((v.videoWidth * k) / 16) * 16);
+    c.height = Math.max(16, Math.round((v.videoHeight * k) / 16) * 16);
     c.getContext("2d").drawImage(v, 0, 0, c.width, c.height);
     this.sending = true;
     c.toBlob((b) => { this.sending = false; if (b && ws.readyState === 1) ws.send(b); }, "image/jpeg", 0.8);
@@ -106,31 +105,23 @@ export function drawSectors(group, p) {
   });
 }
 
-/** The preview points, slowly turning, with the camera path. */
-export function drawCloud(canvas, points, p, time) {
-  const ctx = canvas.getContext("2d"), w = canvas.width, h = canvas.height;
-  ctx.clearRect(0, 0, w, h);
-  const a = time / 5000, tilt = 0.5;
-  const ca = Math.cos(a), sa = Math.sin(a), ct = Math.cos(tilt), st = Math.sin(tilt);
-  const s = w / 2.4; // +-1.2 orbit radii across: the object, not the whole room
-  const at = (x, y, z) => {
-    const X = x * ca + z * sa, Z = -x * sa + z * ca;
-    return [w / 2 + X * s, h / 2 - (y * ct - Z * st) * s];
-  };
-  if (points) {
-    const { n, xyz, rgb } = points;
-    for (let i = 0; i < n; i++) {
-      const [px, py] = at(xyz[3 * i] / UNITS, xyz[3 * i + 1] / UNITS, xyz[3 * i + 2] / UNITS);
-      ctx.fillStyle = `rgb(${rgb[3 * i]},${rgb[3 * i + 1]},${rgb[3 * i + 2]})`;
-      ctx.fillRect(px - 1, py - 1, 2.5, 2.5);
-    }
+/** Paint the coverage of the latest frame on `canvas`, which sits over the video with the same
+ * object-fit, so cell (x, y) lands on the same part of the picture. Clears it when there is
+ * nothing fresh to show. */
+export function drawOverlay(canvas, live) {
+  const buf = live.overlay;
+  const fresh = buf && Date.now() - live.overlayAt < 2500;
+  const dv = fresh ? new DataView(buf) : null;
+  const w = dv ? dv.getUint16(0, true) : 0, h = dv ? dv.getUint16(2, true) : 0;
+  if (!w || !h) { canvas.hidden = true; return; }
+  canvas.width = w; canvas.height = h;
+  const cells = new Uint8Array(buf, 4, w * h);
+  const img = new ImageData(w, h);
+  for (let i = 0; i < w * h; i++) {
+    const c = PAINT[Math.min(cells[i], 3)];
+    if (!c) continue;
+    img.data.set([c[0], c[1], c[2], ALPHA], 4 * i);
   }
-  const cams = (p && p.cameras) || [];
-  ctx.fillStyle = "rgba(255,255,255,.7)";
-  cams.forEach(([x, y, z]) => { const [px, py] = at(x, y, z); ctx.fillRect(px - 1, py - 1, 2, 2); });
-  if (cams.length) {
-    const [px, py] = at(...cams[cams.length - 1]);
-    ctx.fillStyle = "#3ddc84";
-    ctx.beginPath(); ctx.arc(px, py, 5, 0, 2 * Math.PI); ctx.fill();
-  }
+  canvas.getContext("2d").putImageData(img, 0, 0);
+  canvas.hidden = false;
 }

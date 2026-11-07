@@ -22,6 +22,7 @@ STALE = 15 * 60  # a session nobody finished or tracked within this long is drop
 POINTS = 4000  # preview points sent to the phone
 CAMERAS = 300  # recent camera positions sent
 WRITE_EVERY = 0.7  # seconds between updates
+EMPTY = b"\0\0\0\0"  # an overlay of 0 x 0 cells: nothing to paint
 
 
 def decode(path: Path) -> np.ndarray | None:
@@ -82,6 +83,8 @@ def run(sess: Path, slam, clock=time.time, sleep=time.sleep) -> dict:
                 p.placed = slam.add(img)
                 if p.placed:
                     p.tracked += 1
+                # what the phone paints over its camera view (empty while lost)
+                S.write_atomic(out / "overlay.bin", slam.overlay() if p.placed else EMPTY)
         else:
             sleep(0.05)
         ended = control.get("ended") and not frames or clock() - last_frame > IDLE_END

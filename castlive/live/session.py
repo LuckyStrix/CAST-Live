@@ -7,6 +7,7 @@ They share files only (the capture site has no network path to the GPU container
         control.json          {"pass": n, "ended": bool}  (capture writes)
         out/state.json        tracking state and coverage  (live writes)
         out/points.bin        preview point cloud, see `pack_points`  (live writes)
+        out/overlay.bin       coverage of the last placed frame, see slam.Slam.overlay (live writes)
         out/done              the session is over  (live writes)
     /data/live/active         the capture being tracked; the reconstructor waits while it exists
 """

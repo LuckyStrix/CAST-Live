@@ -45,6 +45,7 @@
 
 <main id="s-record" class="record" hidden>
   <video id="preview" playsinline muted autoplay></video>
+  <canvas id="coverage" class="coverage" hidden></canvas>
   <div class="frame-guide" aria-hidden="true"><span data-t="frame_guide"></span></div>
   <div class="top" id="top">
     <svg class="ring" viewBox="0 0 100 100" aria-hidden="true">
@@ -54,7 +55,6 @@
     </svg>
     <div class="ring-text"><span id="pass-label"></span><span id="timer">0:00</span></div>
   </div>
-  <canvas id="live-view" class="live-view" width="360" height="360" hidden></canvas>
   <div id="warning" class="warning" hidden></div>
   <div class="bottom">
     <p id="hint" class="hint"></p>

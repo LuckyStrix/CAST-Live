@@ -322,7 +322,7 @@ def create_app(cfg: config.Config | None = None) -> FastAPI:
         async def send_updates():
             seen = {}
             while True:
-                for name in ("state.json", "points.bin"):
+                for name in ("state.json", "overlay.bin"):
                     f = sess / "out" / name
                     try:
                         mtime = f.stat().st_mtime
@@ -337,7 +337,7 @@ def create_app(cfg: config.Config | None = None) -> FastAPI:
                             await ws.send_bytes(data)
                 if (sess / "out" / "done").exists():
                     return
-                await asyncio.sleep(0.4)
+                await asyncio.sleep(0.15)  # the overlay should trail the camera as little as can be
 
         sender = asyncio.create_task(send_updates())
         seq, last = 0, 0.0

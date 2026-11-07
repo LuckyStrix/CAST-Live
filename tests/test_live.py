@@ -75,6 +75,9 @@ class FakeSlam:
         c, f, u = ring(18)
         return c[:self.placed], f[:self.placed], u[:self.placed]
 
+    def overlay(self):
+        return b"\x02\x00\x01\x00\x03\x00"  # 2 x 1 cells: covered from 3 directions, none
+
     def points(self, limit):
         rng = np.random.default_rng(1)
         return rng.normal(0, 0.3, (50, 3)), rng.integers(0, 255, (50, 3)).astype(np.uint8)
@@ -103,6 +106,7 @@ def test_service_tracks_each_pass_and_ends(tmp_path):
     assert p2["frames"] == 4 and 0 < p2["covered"] <= 1 and state["pass"] == 2
     xyz, _ = S.unpack_points((sess / "out" / "points.bin").read_bytes())
     assert len(xyz) == 50
+    assert (sess / "out" / "overlay.bin").read_bytes() == FakeSlam().overlay()
 
 
 def test_service_skips_a_backlog(tmp_path):

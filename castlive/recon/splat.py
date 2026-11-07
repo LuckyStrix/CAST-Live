@@ -415,8 +415,17 @@ def fuse(cams, depth_maps, masks, lo, hi, cells=GRID):
         raise PipelineError("No surface could be made from the model.")
     # Surface only between cells some camera saw: where the seen band behind a surface meets
     # unseen space there is no evidence of anything, so no second (phantom) surface is made.
-    verts, faces, _, _ = marching_cubes(vol, 0.0, mask=seen)
-    return verts * cell + (lo.cpu().numpy() + 0.5 * cell), faces[:, ::-1].copy()
+    verts, faces, inward, _ = marching_cubes(vol, 0.0, mask=seen)  # normals: to lower values
+    return verts * cell + (lo.cpu().numpy() + 0.5 * cell), outward(verts, faces, inward)
+
+
+def outward(verts: np.ndarray, faces: np.ndarray, inward: np.ndarray) -> np.ndarray:
+    """Faces wound so their normals point out of the object (texturing picks the photos facing
+    a face; viewers light the front). `inward`: per-vertex normals into the object (the
+    distance field's descent), which hold for open surfaces too."""
+    a, b, c = (verts[faces[:, i]] for i in range(3))
+    agree = np.einsum("ij,ij->i", np.cross(b - a, c - a), inward[faces].sum(1)) > 0
+    return faces[:, ::-1].copy() if agree.mean() > 0.5 else faces
 
 
 def bounds(params, centre: np.ndarray, radius: float):

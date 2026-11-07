@@ -65,3 +65,13 @@ def test_run_splat_passes_on_errors_the_user_can_act_on(tmp_path, monkeypatch):
     fake_python(tmp_path, monkeypatch, "echo 'Traceback: CUDA out of memory'\nexit 1\n")
     with pytest.raises(RuntimeError, match="exit 1"):
         run.run_splat(tmp_path, tmp_path / "s", False, [0, 0, 0], 1.0, tmp_path / "log")
+
+
+def test_faces_point_outward():
+    v = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], float)
+    out = np.array([[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]])  # a tetrahedron, outward
+    inward = 0.25 - v  # towards its middle
+    assert (splat.outward(v, out, inward) == out).all()
+    assert (splat.outward(v, out[:, ::-1], inward) == out).all()
+    one = out[3:]  # a single open face
+    assert (splat.outward(v, one[:, ::-1], inward) == one).all()

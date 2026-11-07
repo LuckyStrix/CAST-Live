@@ -70,11 +70,16 @@ export class Live {
     }
   }
 
-  /** This pass's coverage while it is fresh: {covered, sectors, cameras, placed, ...} or null. */
-  current() {
+  /** This pass's latest state while it is fresh: {frames, tracked, placed, ...} or null. */
+  info() {
     const s = this.state;
     if (!s || this.status !== "on" || Date.now() - this.stateAt > 4000) return null;
-    const p = s.passes && s.passes[String(this.pass)];
+    return (s.passes && s.passes[String(this.pass)]) || null;
+  }
+
+  /** This pass's coverage once there is some: {covered, sectors, cameras, ...} or null. */
+  current() {
+    const p = this.info();
     return p && p.sectors ? p : null;
   }
 }

@@ -272,7 +272,8 @@ function tick() {
   const moved = turn.hasSensor ? turn.fraction() : Math.min(1, (sec - passStart) / 40);
   const f = cov ? Math.max(Math.min(1, cov.covered / FULL), moved) : moved;
   setRing(f);
-  if (cov && cov.placed === false) warn(t("warn_lost"));
+  const now = live && live.info();
+  if (now && now.placed === false) warn(t("warn_lost"));
   if (f >= 1 && pass === 1 && $("flip").hidden) endPass1();
   if (f >= 1 && pass === 2 && $("finish").hidden) {
     $("finish").hidden = false;

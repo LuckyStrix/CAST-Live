@@ -75,7 +75,7 @@ class FakeSlam:
         c, f, u = ring(18)
         return c[:self.placed], f[:self.placed], u[:self.placed]
 
-    def overlay(self):
+    def overlay(self, centre=None, reach=None):
         return b"\x02\x00\x01\x00\x03\x00"  # 2 x 1 cells: covered from 3 directions, none
 
     def points(self, limit):
@@ -154,7 +154,7 @@ def test_live_socket_writes_checked_frames_by_pass(capture, token, cfg):
         ws.send_bytes(jpeg())  # refused: too soon after the last
         time.sleep(0.3)
         assert sorted(p.name for p in (sess / "in").glob("*.jpg")) == ["1_000000.jpg", "2_000001.jpg"]
-        assert S.read_json(sess / "control.json") == {"pass": 2, "ended": False}
+        assert S.read_json(sess / "control.json") == {"pass": 2, "ended": False, "mode": "object"}
         S.write_json(sess / "out" / "state.json", {"status": "tracking", "pass": 2})
         assert json.loads(ws.receive_text())["pass"] == 2
     time.sleep(0.2)

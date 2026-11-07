@@ -23,6 +23,7 @@ POINTS = 4000  # preview points sent to the phone
 CAMERAS = 300  # recent camera positions sent
 WRITE_EVERY = 0.7  # seconds between updates
 EMPTY = b"\0\0\0\0"  # an overlay of 0 x 0 cells: nothing to paint
+REACH = 0.5  # object mode: paint only surface this close to the object (in orbit radii)
 
 
 def decode(path: Path) -> np.ndarray | None:
@@ -41,6 +42,7 @@ class Pass:
     def __init__(self, number: int, started: float):
         self.number, self.started, self.frames, self.tracked = number, started, 0, 0
         self.placed = False  # was the last frame placed? (False: tracking is lost)
+        self.centre, self.radius = None, None  # what is being filmed, once known
 
 
 def summary(p: Pass, slam) -> tuple[dict, bytes | None]:
@@ -53,6 +55,7 @@ def summary(p: Pass, slam) -> tuple[dict, bytes | None]:
     if not len(xyz):
         return out, None
     centre, R, radius = coverage.frame(c, f, u, fallback=np.median(xyz, axis=0))
+    p.centre, p.radius = centre, radius
     out.update(coverage.measure(c, centre, R, radius))
     out["cameras"] = np.round(coverage.normalise(c[-CAMERAS:], centre, R, radius), 3).tolist()
     return out, S.pack_points(coverage.normalise(xyz, centre, R, radius), rgb)
@@ -83,8 +86,11 @@ def run(sess: Path, slam, clock=time.time, sleep=time.sleep) -> dict:
                 p.placed = slam.add(img)
                 if p.placed:
                     p.tracked += 1
-                # what the phone paints over its camera view (empty while lost)
-                S.write_atomic(out / "overlay.bin", slam.overlay() if p.placed else EMPTY)
+                # what the phone paints over its camera view (empty while lost). Object mode:
+                # just the object, not the table or floor round it.
+                near = (p.centre, REACH * p.radius) if (
+                    control.get("mode") == "object" and p.centre is not None) else (None, None)
+                S.write_atomic(out / "overlay.bin", slam.overlay(*near) if p.placed else EMPTY)
         else:
             sleep(0.05)
         ended = control.get("ended") and not frames or clock() - last_frame > IDLE_END

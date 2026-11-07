@@ -152,16 +152,22 @@ class Slam:
         pts, ok, _ = self._world(frame, 2)
         if self.seen is None:
             depth = frame.X_canon.norm(dim=-1).median().item()
-            self.seen = SeenFrom(self.torch, self.device, cube=depth / 80)
+            # ~2 cm at arm's length: a frame's depth jitters by about this much, and a finer
+            # cube would scatter one bit of surface over many cubes, each seen once
+            self.seen = SeenFrom(self.torch, self.device, cube=depth / 25)
         centre = frame.T_WC.data.reshape(-1)[:3]
         self.seen.add(pts[ok], centre)
 
-    def overlay(self) -> bytes:
+    def overlay(self, centre=None, reach: float | None = None) -> bytes:
         """How well each part of the last placed frame has been covered: uint16 width, height,
-        then one byte per cell (row by row): 0 = no surface found, else directions seen from."""
+        then one byte per cell (row by row): 0 = nothing to paint, else directions seen from.
+        With `centre` and `reach`, only surface within `reach` of `centre` is painted."""
         if self.last is None:
             return struct.pack("<HH", 0, 0)
         pts, ok, (gh, gw) = self._world(self.last, OVERLAY_STEP)
+        if centre is not None:
+            c = self.torch.as_tensor(centre, dtype=pts.dtype, device=pts.device)
+            ok = ok & ((pts - c).norm(dim=1) < reach)
         n = self.seen.count(pts).clamp(0, 255) * ok
         return struct.pack("<HH", gw, gh) + n.to(self.torch.uint8).cpu().numpy().tobytes()
 

@@ -299,7 +299,7 @@ def create_app(cfg: config.Config | None = None) -> FastAPI:
         await ws.accept()
         for _ in range(LIVE_WAIT * 2):  # the capture record appears once uploading starts
             with db.connect(cfg.db) as con:
-                cap = con.execute("SELECT status FROM captures WHERE id = ? AND invite = ?",
+                cap = con.execute("SELECT status, mode FROM captures WHERE id = ? AND invite = ?",
                                   (cid, token)).fetchone()
             if cap is not None:
                 break
@@ -314,7 +314,7 @@ def create_app(cfg: config.Config | None = None) -> FastAPI:
             await ws.close()
             return
         live_now.add(cid)
-        control = {"pass": 1, "ended": False}
+        control = {"pass": 1, "ended": False, "mode": cap["mode"]}
         live.write_json(sess / "control.json", control)
         started = time.monotonic()
         limit = cfg.max_capture_seconds + 60

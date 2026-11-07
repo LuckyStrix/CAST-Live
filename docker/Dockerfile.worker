@@ -1,4 +1,5 @@
-# GPU reconstructor: COLMAP (CUDA) from the official image, plus Python for the CAST pipeline.
+# GPU reconstructor: COLMAP (CUDA) from the official image, plus Python for the pipeline and
+# PyTorch + gsplat for the splat stage.
 # Needs an NVIDIA GPU and Docker's GPU support (Docker Desktop on Windows has it built in).
 # Pinned: the pipeline is checked against this COLMAP (4.2.1). Change it on purpose, then test.
 FROM colmap/colmap@sha256:c1de51615dff33066cd305071226b6343c1168324ef3bd622f0825e55feb5efe AS texrecon
@@ -11,6 +12,17 @@ RUN git clone https://github.com/nmoehrle/mvs-texturing /src && cd /src \
  && sed -i 's/-march=native//' CMakeLists.txt \
  && sed -i 's|GIT_TAG         cuda|GIT_TAG         b62c8905f6dd11a179128517e814e0e00f9bb809|; s|GIT_REPOSITORY  https://github.com/nmoehrle/mve.git|&\n    GIT_TAG         91c0f3fde0781399b2fe872d8e52e4899274a84a|' elibs/CMakeLists.txt \
  && mkdir build && cd build && cmake -DCMAKE_BUILD_TYPE=Release .. && make -j8 texrecon
+
+# gsplat (Apache-2.0) compiled for Blackwell (sm_120) against the same PyTorch as the final
+# image; Ubuntu 24.04 / Python 3.12 like the COLMAP image, so the wheel installs there as is.
+FROM nvidia/cuda:12.8.1-devel-ubuntu24.04 AS gsplat
+ENV DEBIAN_FRONTEND=noninteractive TORCH_CUDA_ARCH_LIST="12.0" MAX_JOBS=8
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-venv python3-dev \
+      git build-essential ninja-build && rm -rf /var/lib/apt/lists/*
+RUN python3 -m venv /opt/venv && /opt/venv/bin/pip install --no-cache-dir torch==2.7.1 numpy \
+      --index-url https://download.pytorch.org/whl/cu128 --extra-index-url https://pypi.org/simple
+RUN git clone --recursive -b v1.5.3 https://github.com/nerfstudio-project/gsplat.git /src \
+ && cd /src && BUILD_NO_CUDA=0 /opt/venv/bin/pip wheel --no-build-isolation --no-deps -w /wheels .
 
 FROM colmap/colmap@sha256:c1de51615dff33066cd305071226b6343c1168324ef3bd622f0825e55feb5efe
 
@@ -26,8 +38,14 @@ RUN (userdel -r ubuntu 2>/dev/null || true) && useradd --create-home --uid 1000 
 
 RUN python3 -m venv /opt/venv
 ENV PATH=/opt/venv/bin:$PATH PYTHONUNBUFFERED=1
-RUN pip install --no-cache-dir numpy scipy opencv-python-headless pillow open3d \
+RUN pip install --no-cache-dir numpy scipy opencv-python-headless pillow open3d scikit-image \
       "rembg[gpu]" "onnxruntime-gpu[cuda,cudnn]"
+# PyTorch with its own CUDA 12.8 libraries, and gsplat built above (the splat stage).
+COPY --from=gsplat /wheels /opt/castlive/wheels
+RUN pip install --no-cache-dir torch==2.7.1 --index-url https://download.pytorch.org/whl/cu128 \
+      --extra-index-url https://pypi.org/simple \
+ && pip install --no-cache-dir /opt/castlive/wheels/gsplat-*.whl \
+ && python -c "import gsplat, skimage, torch; print(torch.__version__, gsplat.__version__)"
 
 # COLMAP's ALIKED + LightGlue models (fetched now: the reconstructor has no network), checked
 # against the hashes COLMAP itself expects.

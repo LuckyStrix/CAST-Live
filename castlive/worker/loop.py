@@ -91,7 +91,7 @@ def drop_stale(cfg: config.Config) -> None:
 
 # Seconds per stage for a ~160-frame capture before this machine has finished any run of its
 # own; after that, the median of its recent runs is used.
-DEFAULT_SECONDS = {"frames": 60, "masks": 60, "poses": 150, "dense": 900, "mesh": 120}
+DEFAULT_SECONDS = {"frames": 60, "masks": 60, "poses": 150, "splat": 600, "mesh": 120}
 
 
 def stage_estimates(cfg: config.Config) -> dict:

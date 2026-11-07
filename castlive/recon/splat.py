@@ -1,0 +1,388 @@
+"""Gaussian splat -> surface. Replaces COLMAP's dense stereo, which leaves holes on plain faces.
+
+A 2D gaussian splat (gsplat, Apache-2.0; 2DGS: flat discs that sit on the surface) is trained on
+the undistorted (and, for objects, masked and cropped) photos from the dense workspace. Its
+depth, rendered from every camera, is fused into a signed-distance grid on the GPU, and marching
+cubes gives the mesh. Off-object pixels count as empty space, so the object's outline from every
+view carves the shape too. Parts no camera saw stay open (honest output, as in CAST).
+
+Run on its own (experiments): python -m castlive.recon.splat <dense dir> <out dir> [--steps N]
+"""
+
+import json
+import time
+from dataclasses import dataclass
+from pathlib import Path
+
+import numpy as np
+
+from castlive.recon import PipelineError
+from castlive.recon.colmap import iter_images, quat_to_rot
+
+STEPS = 15_000  # training steps (one photo each)
+HOLD_OUT = 12  # every n-th photo is kept out of training, to check the splat on unseen views
+GRID = 448  # fusion cells along the longest side of the object's box
+SH0 = 0.28209479177387814  # spherical harmonics: colour = SH0 * coefficient + 0.5
+NORMAL_FROM = 0.2  # fraction of training after which surface normals must agree with depth
+DISTORT_FROM = 0.1
+
+
+@dataclass
+class View:
+    name: str
+    w2c: np.ndarray  # 4x4 world -> camera
+    K: np.ndarray  # 3x3
+    w: int
+    h: int
+
+
+def read_views(sparse: Path) -> list[View]:
+    """Cameras of an undistorted COLMAP text model (PINHOLE)."""
+    cams = {}
+    for ln in (sparse / "cameras.txt").read_text().splitlines():
+        if ln.strip() and not ln.startswith("#"):
+            t = ln.split()
+            if t[1] != "PINHOLE":
+                raise RuntimeError(f"camera model is {t[1]}, expected PINHOLE")
+            cams[t[0]] = (int(t[2]), int(t[3]), *map(float, t[4:8]))
+    views = []
+    for tok, name, _ in iter_images((sparse / "images.txt").read_text()):
+        w2c = np.eye(4)
+        w2c[:3, :3] = quat_to_rot(*map(float, tok[1:5]))
+        w2c[:3, 3] = [float(v) for v in tok[5:8]]
+        w, h, fx, fy, cx, cy = cams[tok[8]]
+        views.append(View(name, w2c, np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]]), w, h))
+    return sorted(views, key=lambda v: v.name)
+
+
+def read_points(sparse: Path) -> tuple[np.ndarray, np.ndarray]:
+    """COLMAP's sparse points (start positions for the gaussians): xyz, rgb 0..1."""
+    xyz, rgb = [], []
+    for ln in (sparse / "points3D.txt").read_text().splitlines():
+        if ln.strip() and not ln.startswith("#"):
+            t = ln.split()
+            xyz.append([float(v) for v in t[1:4]])
+            rgb.append([int(v) / 255 for v in t[4:7]])
+    return np.array(xyz).reshape(-1, 3), np.array(rgb).reshape(-1, 3)
+
+
+def centres_of(views: list[View]) -> np.ndarray:
+    return np.array([-v.w2c[:3, :3].T @ v.w2c[:3, 3] for v in views])
+
+
+def ssim(a, b):
+    """Structural similarity of two [3, H, W] images (11 px gaussian window)."""
+    import torch
+    import torch.nn.functional as F
+
+    g = torch.exp(-((torch.arange(11, device=a.device) - 5.0) ** 2) / (2 * 1.5 ** 2))
+    g = g / g.sum()
+    win = (g[:, None] * g[None, :]).expand(3, 1, 11, 11).contiguous()
+
+    def blur(x):
+        return F.conv2d(x[None], win, padding=5, groups=3)[0]
+
+    c1, c2 = 0.01 ** 2, 0.03 ** 2
+    ma, mb = blur(a), blur(b)
+    va, vb, cov = blur(a * a) - ma ** 2, blur(b * b) - mb ** 2, blur(a * b) - ma * mb
+    return (((2 * ma * mb + c1) * (2 * cov + c2)) / ((ma ** 2 + mb ** 2 + c1) * (va + vb + c2))).mean()
+
+
+class Photos:
+    """The photos (uint8, CPU) and object masks (bool, or None in the ground)."""
+
+    def __init__(self, dense: Path, views: list[View], use_masks: bool):
+        from PIL import Image
+
+        self.images, self.masks = [], []
+        for v in views:
+            with Image.open(dense / "images" / v.name) as im:
+                self.images.append(np.asarray(im.convert("RGB")))
+            if use_masks:
+                with Image.open(dense / "masks" / (v.name + ".png")) as m:
+                    self.masks.append(np.asarray(m.convert("L")) > 127)
+        if not use_masks:
+            self.masks = [None] * len(views)
+
+
+def render(params, view_t, sh_degree, background=None, distloss=False):
+    """(colours+expected depth, alphas, normals, normals from depth, distortion, median depth,
+    meta) for one camera."""
+    import torch
+    from gsplat import rasterization_2dgs
+
+    viewmat, K, w, h = view_t
+    return rasterization_2dgs(
+        params["means"], params["quats"], torch.exp(params["scales"]),
+        torch.sigmoid(params["opacities"]), torch.cat([params["sh0"], params["shN"]], 1),
+        viewmat[None], K[None], w, h, sh_degree=sh_degree, render_mode="RGB+ED",
+        distloss=distloss, backgrounds=background)
+
+
+def train(dense: Path, use_masks: bool, steps: int = STEPS, progress=lambda f: None,
+          normal_weight: float = 0.05, seed: int = 0):
+    """Train the splat. Returns (params, photos, cameras, report)."""
+    import torch
+    from gsplat.strategy import DefaultStrategy
+
+    dev = "cuda"
+    torch.manual_seed(seed)
+    views = read_views(dense / "sparse")
+    xyz, rgb = read_points(dense / "sparse")
+    photos = Photos(dense, views, use_masks)
+    centres = centres_of(views)
+    middle = centres.mean(0)
+    scene = float(np.linalg.norm(centres - middle, axis=1).max()) * 1.1
+    keep = np.linalg.norm(xyz - middle, axis=1) < scene  # stray points far outside the ring
+    xyz, rgb = xyz[keep], rgb[keep]
+    if len(xyz) < 100:
+        raise PipelineError("Too few points were found to start the model. Record closer to "
+                            "the object, in more light, and walk slower.")
+    held = [i for i in range(len(views)) if i % HOLD_OUT == HOLD_OUT // 2]
+    trained = [i for i in range(len(views)) if i not in held]
+
+    pts = torch.tensor(xyz, dtype=torch.float32, device=dev)
+    nn = torch.cdist(pts, pts).topk(4, largest=False).values[:, 1:].mean(1).clamp_min(1e-7)
+    n = len(pts)
+    params = torch.nn.ParameterDict({
+        "means": pts,
+        "scales": torch.log(nn)[:, None].repeat(1, 3),
+        "quats": torch.rand(n, 4, device=dev),
+        "opacities": torch.logit(torch.full((n,), 0.1, device=dev)),
+        "sh0": ((torch.tensor(rgb, dtype=torch.float32, device=dev) - 0.5) / SH0)[:, None],
+        "shN": torch.zeros(n, 15, 3, device=dev),
+    }).requires_grad_(True)
+    rates = {"means": 1.6e-4 * scene, "scales": 5e-3, "quats": 1e-3, "opacities": 5e-2,
+             "sh0": 2.5e-3, "shN": 2.5e-3 / 20}
+    opt = {k: torch.optim.Adam([{"params": params[k], "lr": r, "name": k}], eps=1e-15)
+           for k, r in rates.items()}
+    decay = torch.optim.lr_scheduler.ExponentialLR(opt["means"], gamma=0.01 ** (1 / steps))
+    strategy = DefaultStrategy(key_for_gradient="gradient_2dgs", refine_stop_iter=steps // 2,
+                               reset_every=3000, verbose=False)
+    strategy.check_sanity(params, opt)
+    sstate = strategy.initialize_state(scene_scale=scene)
+
+    def camera(i):
+        v = views[i]
+        return (torch.tensor(v.w2c, dtype=torch.float32, device=dev),
+                torch.tensor(v.K, dtype=torch.float32, device=dev), v.w, v.h)
+
+    cams = [camera(i) for i in range(len(views))]
+    rng = np.random.default_rng(seed)
+    order: list[int] = []
+    start = time.time()
+    for step in range(steps):
+        if not order:
+            order = list(rng.permutation(trained))
+        i = order.pop()
+        img = torch.from_numpy(photos.images[i]).to(dev, non_blocking=True).float() / 255
+        bg = torch.rand(3, device=dev)
+        if photos.masks[i] is not None:  # off the object: see-through (the random background)
+            m = torch.from_numpy(photos.masks[i]).to(dev)[..., None].float()
+            img = img * m + bg * (1 - m)
+        colours, alphas, normals, normals_d, distort, _, info = render(
+            params, cams[i], min(3, step // 1000), bg[None], distloss=step >= DISTORT_FROM * steps)
+        out = colours[0, ..., :3]
+        strategy.step_pre_backward(params, opt, sstate, step, info)
+        l1 = (out - img).abs().mean()
+        loss = 0.8 * l1 + 0.2 * (1 - ssim(out.permute(2, 0, 1), img.permute(2, 0, 1)))
+        if step >= NORMAL_FROM * steps:
+            nd = normals_d.reshape(cams[i][3], cams[i][2], 3) * alphas[0].detach()
+            loss = loss + normal_weight * (1 - (normals[0] * nd).sum(-1)).mean()
+        if step >= DISTORT_FROM * steps:
+            loss = loss + 1e-2 * distort.mean()
+        loss.backward()
+        for o in opt.values():
+            o.step()
+            o.zero_grad(set_to_none=True)
+        decay.step()
+        strategy.step_post_backward(params, opt, sstate, step, info, packed=False)
+        if step % 200 == 0:
+            progress(step / steps)
+    report = {"views": len(views), "held_out": len(held), "gaussians": len(params["means"]),
+              "steps": steps, "train_seconds": round(time.time() - start),
+              "gpu_gb": round(torch.cuda.max_memory_allocated() / 2 ** 30, 1)}
+    with torch.no_grad():
+        report["psnr_held_out"] = round(psnr(params, [cams[i] for i in held],
+                                             [photos.images[i] for i in held],
+                                             [photos.masks[i] for i in held]), 2)
+    return params, photos, cams, report
+
+
+def psnr(params, cams, images, masks) -> float:
+    """Mean PSNR (dB) of the splat against photos, on the object only when there are masks."""
+    import torch
+
+    out = []
+    for cam, image, mask in zip(cams, images, masks):
+        colours = render(params, cam, 3, torch.zeros(1, 3, device="cuda"))[0][0, ..., :3]
+        img = torch.from_numpy(image).cuda().float() / 255
+        if mask is not None:
+            m = torch.from_numpy(mask).cuda()[..., None].float()
+            img, colours = img * m, colours * m
+        out.append(float(-10 * torch.log10(((colours.clamp(0, 1) - img) ** 2).mean())))
+    return float(np.mean(out)) if out else 0.0
+
+
+def depths(params, cams, photos):
+    """Median depth per camera where the splat is solid (and on the object): 0 elsewhere."""
+    import torch
+
+    out = []
+    with torch.no_grad():
+        for cam, mask in zip(cams, photos.masks):
+            _, alphas, _, _, _, median, _ = render(params, cam, 0)
+            ok = alphas[0, ..., 0] > 0.5
+            if mask is not None:
+                ok &= torch.from_numpy(mask).cuda()
+            out.append(torch.where(ok, median[0, ..., 0], 0))
+    return out
+
+
+def fuse(cams, depth_maps, masks, lo, hi, cells=GRID):
+    """Average signed distances from every depth map on a grid over [lo, hi] (GPU), then
+    marching cubes. Off-object pixels (masks) count as empty space. Returns vertices, faces."""
+    import torch
+    from skimage.measure import marching_cubes
+
+    cell = float((hi - lo).max()) / cells
+    dims = [max(2, int(np.ceil(float(x) / cell))) for x in (hi - lo)]
+    axes = [lo[i] + (torch.arange(dims[i], device=lo.device) + 0.5) * cell for i in range(3)]
+    grid = torch.stack(torch.meshgrid(*axes, indexing="ij"), -1).reshape(-1, 3)
+    tsdf = torch.zeros(len(grid), device=lo.device)
+    weight = torch.zeros(len(grid), device=lo.device)
+    band = 4 * cell
+    for (viewmat, K, w, h), depth, mask in zip(cams, depth_maps, masks):
+        pc = grid @ viewmat[:3, :3].T + viewmat[:3, 3]
+        z = pc[:, 2]
+        u = (K[0, 0] * pc[:, 0] / z + K[0, 2]).floor().long()
+        v = (K[1, 1] * pc[:, 1] / z + K[1, 2]).floor().long()
+        inside = (z > 0) & (u >= 0) & (u < w) & (v >= 0) & (v < h)
+        idx = v.clamp(0, h - 1) * w + u.clamp(0, w - 1)
+        d = depth.reshape(-1)[idx]
+        sdf = ((d - z) / band).clamp(-1, 1)
+        seen = (d > 0) & (d - z > -band)  # in front of the surface or just behind it
+        if mask is not None:
+            off = ~torch.from_numpy(mask).cuda().reshape(-1)[idx]
+            sdf = torch.where(off, torch.ones_like(sdf), sdf)
+            seen |= off
+        use = inside & seen
+        tsdf = torch.where(use, (tsdf * weight + sdf) / (weight + 1), tsdf)
+        weight += use.float()
+    vol = torch.where(weight > 0, tsdf, torch.ones_like(tsdf)).reshape(dims).cpu().numpy()
+    if vol.min() >= 0 or vol.max() <= 0:
+        raise PipelineError("No surface could be made from the model.")
+    verts, faces, _, _ = marching_cubes(vol, 0.0)
+    return verts * cell + (lo.cpu().numpy() + 0.5 * cell), faces[:, ::-1].copy()
+
+
+def bounds(params, centre: np.ndarray, radius: float):
+    """The box round the solid part of the splat, within `radius` of `centre`."""
+    import torch
+
+    c = torch.tensor(centre, dtype=torch.float32, device="cuda")
+    pts = params["means"].detach()
+    solid = (torch.sigmoid(params["opacities"].detach()) > 0.5) & ((pts - c).norm(dim=1) < radius)
+    pts = pts[solid]
+    if len(pts) < 100:
+        raise PipelineError("No surface could be made from the model.")
+    lo, hi = torch.quantile(pts, 0.002, 0), torch.quantile(pts, 0.998, 0)
+    pad = (hi - lo) * 0.05
+    return lo - pad, hi + pad
+
+
+def colours_at(params, vertices: np.ndarray) -> np.ndarray:
+    """Each vertex takes the base colour of the nearest solid gaussian (texture fallback)."""
+    import torch
+    from scipy.spatial import cKDTree
+
+    solid = (torch.sigmoid(params["opacities"]) > 0.3).cpu().numpy()
+    means = params["means"].detach().cpu().numpy()[solid]
+    base = (params["sh0"].detach().cpu().numpy()[solid, 0] * SH0 + 0.5).clip(0, 1)
+    return base[cKDTree(means).query(vertices)[1]]
+
+
+def save_ply(params, path: Path) -> None:
+    """The splat in the usual 3DGS .ply layout (x y z, nx ny nz, f_dc, f_rest, opacity, scale,
+    rot), readable by common splat viewers. 2DGS discs keep a tiny third scale."""
+    p = {k: v.detach().cpu().numpy().astype(np.float32) for k, v in params.items()}
+    n = len(p["means"])
+    rest = p["shN"].transpose(0, 2, 1).reshape(n, -1)  # per colour channel, as 3DGS stores them
+    scales = p["scales"].copy()
+    scales[:, 2] = np.log(1e-4) + np.log(np.exp(scales[:, :2]).min(1))  # flat disc
+    q = p["quats"] / np.linalg.norm(p["quats"], axis=1, keepdims=True)
+    cols = ([("x", p["means"][:, 0]), ("y", p["means"][:, 1]), ("z", p["means"][:, 2])]
+            + [(f"n{a}", np.zeros(n, np.float32)) for a in "xyz"]
+            + [(f"f_dc_{i}", p["sh0"][:, 0, i]) for i in range(3)]
+            + [(f"f_rest_{i}", rest[:, i]) for i in range(rest.shape[1])]
+            + [("opacity", p["opacities"])]
+            + [(f"scale_{i}", scales[:, i]) for i in range(3)]
+            + [(f"rot_{i}", q[:, i]) for i in range(4)])
+    data = np.empty(n, dtype=[(name, "<f4") for name, _ in cols])
+    for name, values in cols:
+        data[name] = values
+    header = ("ply\nformat binary_little_endian 1.0\n"
+              f"element vertex {n}\n" + "".join(f"property float {name}\n" for name, _ in cols)
+              + "end_header\n")
+    with open(path, "wb") as fh:
+        fh.write(header.encode())
+        fh.write(data.tobytes())
+
+
+def make(dense: Path, out: Path, use_masks: bool, centre: np.ndarray, radius: float,
+         steps: int = STEPS, progress=lambda f: None):
+    """Train, save the splat (out/splat.ply) and fuse the surface. Returns (vertices, faces,
+    colours, report)."""
+    import torch
+
+    out.mkdir(parents=True, exist_ok=True)
+    params, photos, cams, report = train(
+        dense, use_masks, steps, progress=lambda f: progress(0.9 * f))
+    save_ply(params, out / "splat.ply")
+    t = time.time()
+    lo, hi = bounds(params, centre, radius)
+    verts, faces = fuse(cams, depths(params, cams, photos), photos.masks, lo, hi)
+    report["fuse_seconds"] = round(time.time() - t)
+    colours = colours_at(params, verts)
+    torch.cuda.empty_cache()
+    progress(1.0)
+    return verts, faces, colours, report
+
+
+def main():
+    import argparse
+    import sys
+
+    from castlive.recon import mesh as M
+
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("dense", type=Path)
+    ap.add_argument("out", type=Path)
+    ap.add_argument("--steps", type=int, default=STEPS)
+    ap.add_argument("--no-masks", action="store_true")
+    ap.add_argument("--centre", help="x,y,z of what was filmed (default: where cameras look)")
+    ap.add_argument("--radius", type=float, help="how far round it to make the surface")
+    ap.add_argument("--progress", action="store_true", help="print 'progress <fraction>' lines")
+    a = ap.parse_args()
+    views = read_views(a.dense / "sparse")
+    c = centres_of(views)
+    centre = (np.array([float(x) for x in a.centre.split(",")]) if a.centre
+              else M.look_at_point(c, np.array([v.w2c[2, :3] for v in views])))
+    radius = a.radius or 0.8 * float(np.median(np.linalg.norm(c - centre, axis=1)))
+    show = (lambda f: print(f"progress {f:.4f}", flush=True)) if a.progress else (lambda f: None)
+    t = time.time()
+    try:
+        v, f, col, report = make(a.dense, a.out, not a.no_masks, centre, radius, a.steps, show)
+        m = M.from_arrays(v, f, col)
+    except PipelineError as e:
+        print(f"PipelineError: {e}", flush=True)
+        sys.exit(2)
+    M.save_ply(m, a.out / "mesh.ply")
+    report["mesh"] = m.stats
+    report["total_seconds"] = round(time.time() - t)
+    (a.out / "report.json").write_text(json.dumps(report, indent=1))
+    print(json.dumps(report), flush=True)
+
+
+if __name__ == "__main__":
+    main()

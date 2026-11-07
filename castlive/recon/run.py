@@ -1,11 +1,16 @@
-"""One capture through every stage. Writes everything to /data/runs/<capture id>/.
+"""One capture through every stage: frames -> masks (objects) -> camera poses (COLMAP) ->
+splat and its surface (gsplat) -> textured mesh (texrecon) -> GLB. Writes everything to /data/runs/<capture id>/.
 
 Each finished stage is recorded in state.json, so a retry continues from the stage that
 failed. `progress(stage, fraction)` is called as stages start and advance, for studio; run.log
 gets a line per stage, colmap.log everything COLMAP prints.
 """
 
+import contextlib
 import json
+import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -13,7 +18,7 @@ import numpy as np
 
 from castlive.recon import PipelineError, colmap, frames, glb, masks, mesh, texture
 
-STAGES = ["frames", "masks", "poses", "dense", "mesh"]
+STAGES = ["frames", "masks", "poses", "splat", "mesh"]
 # Two passes are joined only if enough 3D points were seen from both, spread round the object.
 # Frames all getting a position proves nothing: the first box run placed 158/160 frames on 42
 # shared points bunched on two lines, and its halves were far apart. Measured on the box:
@@ -37,7 +42,7 @@ def process(video: Path, meta: dict, mode: str, run_dir: Path,
     report = state.setdefault("report", {"mode": mode, "seconds": {}})
     log = run_dir / "colmap.log"
     images, mask_dir = run_dir / "frames", run_dir / "masks"
-    dense_dir, cloud = run_dir / "dense", run_dir / "dense" / "fused.ply"
+    dense_dir, splat_dir = run_dir / "dense", run_dir / "splat"
     use_masks = mode == "object"
 
     def note(text):
@@ -121,34 +126,40 @@ def process(video: Path, meta: dict, mode: str, run_dir: Path,
                                     "the edges slowly, before and after turning the object over, "
                                     "and keep the object filling the box on screen.")
 
-    def do_dense(p):
-        # Object: undistort at full size, mask, crop each image to the object. In the ground:
-        # the whole scene matters, so whole images at a moderate size.
-        secs = {"undistort": colmap.undistort(images, Path(state["model"]), dense_dir, log,
-                                              FRAME_SIZE if use_masks else 2000,
-                                              colmap.span(p, 0, 0.03))}
-        fusion_masks = None
-        if use_masks:  # fusion and cropping read the undistorted images, so mask those
-            fusion_masks = dense_dir / "masks"
-            t = time.time()
-            masks.make_masks(dense_dir / "images", fusion_masks, masks.GROW_FOR_FUSION,
-                             progress=colmap.span(p, 0.03, 0.1))
-            report["crop"] = colmap.crop_to_masks(dense_dir, fusion_masks, log)
-            secs["masks_and_crop"] = time.time() - t
-        secs["stereo"] = colmap.stereo(dense_dir, log, progress=colmap.span(p, 0.1, 0.95))
-        secs["fusion"] = colmap.fuse(dense_dir, cloud, fusion_masks, log,
-                                     progress=colmap.span(p, 0.95, 1.0))
-        report["dense_seconds"] = {k: round(v) for k, v in secs.items()}
-
-    def do_mesh(p):
+    def look():
+        """What was filmed (the point every camera looks at), how far away, which way is up."""
         cams = state["cameras"]
         centres, ups = np.array(cams["centres"]), np.array(cams["ups"])
         centre = mesh.look_at_point(centres, np.array(cams["forwards"]))
         distance = float(np.median(np.linalg.norm(centres - centre, axis=1)))
         first = np.array([n.startswith("p1_") for n in cams["names"]])
-        up = ups[first].mean(axis=0) if first.any() else ups.mean(axis=0)
-        m = mesh.build(cloud, centre, radius=0.8 * distance)
-        report["mesh"] = m.stats
+        return centre, distance, ups[first].mean(axis=0) if first.any() else ups.mean(axis=0)
+
+    def do_splat(p):
+        # Object: undistort at full size, mask, crop each image to the object. In the ground:
+        # the whole scene matters, so whole images at a moderate size.
+        secs = {"undistort": colmap.undistort(images, Path(state["model"]), dense_dir, log,
+                                              FRAME_SIZE if use_masks else 2000,
+                                              colmap.span(p, 0, 0.03))}
+        if use_masks:  # training and cropping read the undistorted images, so mask those
+            t = time.time()
+            masks.make_masks(dense_dir / "images", dense_dir / "masks", masks.GROW_FOR_FUSION,
+                             progress=colmap.span(p, 0.03, 0.1))
+            report["crop"] = colmap.crop_to_masks(dense_dir, dense_dir / "masks", log)
+            secs["masks_and_crop"] = time.time() - t
+        centre, distance, _ = look()
+        t = time.time()
+        report["splat"] = run_splat(dense_dir, splat_dir, use_masks, centre, 0.8 * distance,
+                                    run_dir / "splat.log", colmap.span(p, 0.1, 1.0))
+        secs["splat"] = time.time() - t
+        report["splat"]["seconds"] = {k: round(v) for k, v in secs.items()}
+        note(f"splat: {report['splat']['gaussians']:,} gaussians, {report['splat']['psnr_held_out']}"
+             f" dB on {report['splat']['held_out']} unseen photos")
+
+    def do_mesh(p):
+        centre, _, up = look()
+        m = mesh.load_ply(splat_dir / "mesh.ply")
+        m.stats = report["mesh"] = report["splat"]["mesh"]
         note(f"mesh: {m.stats['triangles']:,} triangles")
         place = mesh.placement(m.vertices, centre, up)
         try:  # colour from the photos; point colours if that fails
@@ -169,7 +180,7 @@ def process(video: Path, meta: dict, mode: str, run_dir: Path,
             v, n = place(m.vertices, m.normals)
             glb.write_glb(run_dir / "model.glb", v, m.faces, m.colors, n)
 
-    jobs = {"frames": do_frames, "masks": do_masks, "poses": do_poses, "dense": do_dense,
+    jobs = {"frames": do_frames, "masks": do_masks, "poses": do_poses, "splat": do_splat,
             "mesh": do_mesh}
     for name in stages_for(mode):
         try:
@@ -178,3 +189,40 @@ def process(video: Path, meta: dict, mode: str, run_dir: Path,
             state_path.write_text(json.dumps(state, indent=1))
     (run_dir / "report.json").write_text(json.dumps(report, indent=1))
     return report
+
+
+def run_splat(dense: Path, out: Path, use_masks: bool, centre, radius: float, log: Path,
+              progress=lambda f: None) -> dict:
+    """The splat stage in its own process: PyTorch's CUDA libraries stay out of this one (the
+    masks' ONNX Runtime brings others), and its GPU memory is freed when it ends."""
+    cmd = [sys.executable, "-m", "castlive.recon.splat", str(dense), str(out), "--progress",
+           "--centre", ",".join(f"{x:.9g}" for x in centre), "--radius", f"{radius:.9g}"]
+    if not use_masks:
+        cmd.append("--no-masks")
+    last, error = "", None
+    with open(log, "a", encoding="utf-8", errors="replace") as fh:
+        fh.write(f"\n===== {' '.join(cmd)}\n")
+        fh.flush()
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                errors="replace", bufsize=1, env={**os.environ, "PYTHONUNBUFFERED": "1"})
+        try:
+            for line in proc.stdout:
+                if line.startswith("progress "):
+                    with contextlib.suppress(Exception):  # progress is for display only
+                        progress(float(line.split()[1]))
+                    continue
+                fh.write(line)
+                if line.startswith("PipelineError: "):
+                    error = line[len("PipelineError: "):].strip()
+                elif line.strip():
+                    last = line
+            code = proc.wait()
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+    if error:
+        raise PipelineError(error)
+    if code != 0:
+        raise RuntimeError(f"splat failed (exit {code}); see splat.log")
+    return json.loads(last)

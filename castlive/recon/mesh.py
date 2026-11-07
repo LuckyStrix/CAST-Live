@@ -1,4 +1,5 @@
-"""Dense point cloud -> a vertex-coloured mesh that shows only what the cameras saw.
+"""Surfaces: the mesh from the splat (`from_arrays`), or, from a dense point cloud, a trimmed
+Poisson surface (`build`, CAST's way), and how either is placed for viewing.
 
 Poisson reconstruction closes every surface, inventing shape where there was no data. CAST
 trims those parts (low Poisson density = few points nearby) so unseen areas stay open instead
@@ -99,6 +100,54 @@ def build(cloud: Path, centre: np.ndarray, radius: float, depth: int = 10) -> Me
              "vertices": len(v), "triangles": len(mesh.triangles),
              "open": len(np.asarray(edges)) > 0, "scale_known": False}
     return Mesh(v, np.asarray(mesh.triangles), colors, np.asarray(mesh.vertex_normals), stats)
+
+
+def from_arrays(vertices: np.ndarray, faces: np.ndarray, colors: np.ndarray) -> Mesh:
+    """A Mesh from raw triangles (e.g. marching cubes): the main piece only, at most TRIANGLES."""
+    import open3d as o3d
+
+    o3d.utility.set_verbosity_level(o3d.utility.VerbosityLevel.Error)
+    mesh = o3d.geometry.TriangleMesh(o3d.utility.Vector3dVector(vertices),
+                                     o3d.utility.Vector3iVector(faces))
+    mesh.vertex_colors = o3d.utility.Vector3dVector(np.clip(colors, 0, 1))
+    raw = len(mesh.triangles)
+    clusters, counts, _ = mesh.cluster_connected_triangles()
+    clusters, counts = np.asarray(clusters), np.asarray(counts)
+    if len(counts) > 1:  # keep the main piece: specks form round stray gaussians
+        mesh.remove_triangles_by_mask(clusters != counts.argmax())
+        mesh.remove_unreferenced_vertices()
+    if len(mesh.triangles) > TRIANGLES:
+        mesh = mesh.simplify_quadric_decimation(TRIANGLES)
+    mesh.remove_degenerate_triangles()
+    mesh.remove_unreferenced_vertices()
+    if not len(mesh.triangles):
+        raise PipelineError("No surface could be made from the model.")
+    mesh.compute_vertex_normals()
+    edges = mesh.get_non_manifold_edges(allow_boundary_edges=False)
+    v = np.asarray(mesh.vertices)
+    stats = {"triangles_raw": raw, "pieces": len(counts), "vertices": len(v),
+             "triangles": len(mesh.triangles), "open": len(np.asarray(edges)) > 0,
+             "scale_known": False}
+    return Mesh(v, np.asarray(mesh.triangles), np.asarray(mesh.vertex_colors),
+                np.asarray(mesh.vertex_normals), stats)
+
+
+def save_ply(m: Mesh, path: Path) -> None:
+    import open3d as o3d
+
+    mesh = o3d.geometry.TriangleMesh(o3d.utility.Vector3dVector(m.vertices),
+                                     o3d.utility.Vector3iVector(m.faces))
+    mesh.vertex_colors = o3d.utility.Vector3dVector(m.colors)
+    mesh.vertex_normals = o3d.utility.Vector3dVector(m.normals)
+    o3d.io.write_triangle_mesh(str(path), mesh)
+
+
+def load_ply(path: Path) -> Mesh:
+    import open3d as o3d
+
+    mesh = o3d.io.read_triangle_mesh(str(path))
+    return Mesh(np.asarray(mesh.vertices), np.asarray(mesh.triangles),
+                np.asarray(mesh.vertex_colors), np.asarray(mesh.vertex_normals), {})
 
 
 def normals_for(vertices: np.ndarray, m: Mesh) -> np.ndarray:

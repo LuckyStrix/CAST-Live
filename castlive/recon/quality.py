@@ -57,7 +57,8 @@ def measure(dense: Path, vertices: np.ndarray, faces: np.ndarray, use_masks: boo
                 mask = np.asarray(m.convert("L").resize((w, h))) > 127
             parts, _ = label(mask)
             touched = np.unique(parts[hit & mask])
-            mask = np.isin(parts, touched[touched > 0])
+            if (touched > 0).any():  # the mesh missing the object entirely still counts
+                mask = np.isin(parts, touched[touched > 0])
             if mask.sum():
                 missed.append((mask & ~hit).sum() / mask.sum())
                 extra.append((hit & ~mask).sum() / mask.sum())

@@ -50,7 +50,7 @@ def fake_python(tmp_path, monkeypatch, body: str):
 
 def test_run_splat_reports_progress_and_result(tmp_path, monkeypatch):
     fake_python(tmp_path, monkeypatch, "echo 'progress 0.5'\necho 'training'\n"
-                                       "echo '{\"gaussians\": 5}'\n")
+                                       "echo '{\"gaussians\": 5}'\necho 'UserWarning: x'\n")
     seen = []
     out = run.run_splat(tmp_path, tmp_path / "s", True, [0, 0, 0], 1.0, tmp_path / "log",
                         seen.append)

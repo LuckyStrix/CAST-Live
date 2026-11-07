@@ -225,7 +225,7 @@ def run_splat(dense: Path, out: Path, use_masks: bool, centre, radius: float, lo
                 fh.write(line)
                 if line.startswith("PipelineError: "):
                     error = line[len("PipelineError: "):].strip()
-                elif line.strip():
+                elif line.startswith("{"):  # the report (warnings may follow it)
                     last = line
             code = proc.wait()
         finally:

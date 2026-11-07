@@ -204,3 +204,16 @@ def test_web_apps_do_not_need_numpy():
     code = ("import sys; sys.modules['numpy'] = None\n"
             "import castlive.capture.app, castlive.studio.app")
     assert subprocess.run([sys.executable, "-c", code], check=False).returncode == 0
+
+
+def test_live_socket_drops_frames_when_the_live_service_is_behind(capture, token, cfg, monkeypatch):
+    from castlive.capture import app
+
+    monkeypatch.setattr(app, "LIVE_QUEUE", 2)
+    start_capture(capture, token)
+    with capture.websocket_connect(f"/live/{token}/{CID}") as ws:
+        for _ in range(4):
+            ws.send_bytes(jpeg())
+            time.sleep(0.15)
+        time.sleep(0.2)
+    assert len(list((S.session(cfg.data, CID) / "in").glob("*.jpg"))) == 2

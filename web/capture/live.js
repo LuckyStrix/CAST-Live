@@ -112,7 +112,7 @@ export function drawCloud(canvas, points, p, time) {
   ctx.clearRect(0, 0, w, h);
   const a = time / 5000, tilt = 0.5;
   const ca = Math.cos(a), sa = Math.sin(a), ct = Math.cos(tilt), st = Math.sin(tilt);
-  const s = w / 5; // +-2.5 orbit radii across
+  const s = w / 2.4; // +-1.2 orbit radii across: the object, not the whole room
   const at = (x, y, z) => {
     const X = x * ca + z * sa, Z = -x * sa + z * ca;
     return [w / 2 + X * s, h / 2 - (y * ct - Z * st) * s];

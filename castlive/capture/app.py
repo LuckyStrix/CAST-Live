@@ -31,6 +31,7 @@ MAX_META_BYTES = 64 * 1024
 LIVE_FRAME_BYTES = 300_000
 LIVE_SIDE = 1024  # longest side of a live frame
 LIVE_GAP = 0.12  # seconds between frames: at most ~8 per second; faster ones are dropped
+LIVE_QUEUE = 30  # frames waiting for the live service; beyond this (it is down or behind), drop
 IDLE_FINISH = 30  # after the phone says "end", seconds to wait for the final state
 LIVE_WAIT = 20  # seconds to wait for the capture record (the uploader makes it as filming starts)
 
@@ -83,6 +84,14 @@ def good_jpeg(raw: bytes) -> bool:
         return True
     except Exception:  # noqa: BLE001 - anything Pillow rejects is not a frame
         return False
+
+
+def queued(sess: Path) -> int:
+    try:
+        with os.scandir(sess / "in") as it:
+            return sum(1 for _ in it)
+    except OSError:
+        return 0
 
 
 def create_app(cfg: config.Config | None = None) -> FastAPI:
@@ -340,7 +349,9 @@ def create_app(cfg: config.Config | None = None) -> FastAPI:
                 if msg.get("bytes") is not None:
                     now = time.monotonic()
                     raw = msg["bytes"]
-                    if now - last < LIVE_GAP or not await run_in_threadpool(good_jpeg, raw):
+                    if now - last < LIVE_GAP or queued(sess) >= LIVE_QUEUE:
+                        continue
+                    if not await run_in_threadpool(good_jpeg, raw):
                         continue
                     last = now
                     name = live.frame_name(control["pass"], seq)

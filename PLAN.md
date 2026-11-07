@@ -71,7 +71,10 @@ Reused as-is from CAST: invite/project model, chunked resumable upload, CSP head
 ## Phases (code review after each, as in CAST)
 1. **Spike (no app code) — done, results above:** build the GPU image on the 5060 Ti (sm_120 + CUDA 12.8 — main risk: MASt3R-SLAM/PGSR custom CUDA kernels must compile for Blackwell). Run MASt3R-SLAM and VGGT-SLAM 2.0 on the box and mouse frames from CAST: FPS at 512 px, VRAM, pose agreement with CAST's COLMAP poses, does the flip join with MASt3R matching. Pick the SLAM engine. Report numbers.
 2. **Repo skeleton:** new repo, copy common/capture/studio/worker/docker/web from CAST, rename package, CI, LICENSES.md with every model's terms, (the `live` service is added in phase 3 with its code). Existing CAST tests pass under the new names.
-3. **Live loop:** phone WebSocket (invite-checked, rate-limited, max frame size, session timeout) → file hand-off → `live` SLAM → coverage + points back to phone and to a studio live page. Phone records full-res video at the same time and uploads it after (existing upload path).
+3. **Live loop — done (6 Nov 2026):** box frames at phone speed through the deployed site: 93/95
+   and 63/65 frames placed, ~4 frames/s, coverage 100% on both sides, "Turn it over" shown by
+   coverage. Live positions are taken from keyframe-corrected poses (tracked poses drift).
+   Original scope: phone WebSocket (invite-checked, rate-limited, max frame size, session timeout) → file hand-off → `live` SLAM → coverage + points back to phone and to a studio live page. Phone records full-res video at the same time and uploads it after (existing upload path).
 4. **Final reconstruction:** poses (VGGT/SLAM first guess per pass → COLMAP join and bundle adjustment at full res, turn-over check from CAST) → gsplat (MCMC, masked for object mode) → SPZ; PGSR mesh → texrecon → GLB. Report: timings, join quality, coverage holes.
 5. **Studio viewers:** Spark splat viewer with the mesh viewer as a toggle (raking light stays on the mesh); downloads SPZ, PLY, GLB.
 6. **Polish:** quick preview splat after Stop; Android + iPhone tests; docs for untrained users; scale card later.

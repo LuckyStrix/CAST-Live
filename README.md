@@ -9,12 +9,19 @@ setup, and rebuilds the modelling around newer learned tools (MASt3R-SLAM, VGGT,
 splatting) whose licences allow research use only. See [LICENSES.md](LICENSES.md) and the plan in
 [PLAN.md](PLAN.md).
 
-**Status:** phase 2 — CAST's layout copied and renamed; the reconstruction is still CAST's
-photogrammetry pipeline (`castlive/recon/`). Live SLAM comes next.
+**Status:** phase 3 — **live coverage works**: while you film, the phone sends small frames
+(about 4 a second) to the GPU, MASt3R-SLAM tracks them, and the phone's ring lights up each
+direction filmed so far, with a small turning preview of the points. "Turn it over" appears when
+the round is complete. The studio can watch the same session (`watch live` on the capture). The
+final model is still CAST's photogrammetry (`castlive/recon/`); gaussian splats come next.
 
 ```
 phone ──(invite link, Tailscale Funnel)──► capture site ──► worker ──► reconstructor ──► studio (your tailnet)
 ```
+
+While filming, the capture site and the `live` service share only files (`/data/live/`): the
+public site still has no network path to the GPU containers. A reconstruction waits between its
+stages while someone films live, so the GPU is theirs.
 
 ## Run it
 

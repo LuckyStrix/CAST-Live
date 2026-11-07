@@ -10,7 +10,6 @@ Run on its own (experiments): python -m castlive.recon.splat <dense dir> <out di
 """
 
 import json
-import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,9 +28,6 @@ DISTORT_FROM = 0.1
 MULTIVIEW_FROM = 0.3  # then: patches must match between neighbouring photos (PGSR's idea)
 MULTIVIEW_PIXELS = 4096  # patch centres checked per step
 NCC_WEIGHT, GEO_WEIGHT = 0.15, 0.03
-PRIOR_WEIGHT = 0.1  # learned normals (MoGe-2), only where a photo is plain (see `prior_normals`)
-PRIOR_SIDE = 768  # long side the normal model sees
-MOGE = Path(os.environ.get("CASTLIVE_MOGE", "/opt/castlive/models/moge-2-vitl-normal.pt"))
 
 
 @dataclass
@@ -208,57 +204,8 @@ def multiview(colours, normals, alphas, cam, cam_n, grey_r, grey_n, depth_n, mas
     return photo, geo
 
 
-def prior_normals(photos, model_path: Path = MOGE):
-    """Per photo: normals from a single-image model (MoGe-2, MIT; camera frame, OpenCV axes) and
-    how much to trust them. Trust is high where the photo is plain (little local contrast, so
-    the photos themselves can't pin the surface down) and falls off where there is texture,
-    which is left to the multi-view evidence: exp(-(gradient / typical gradient)^2), the
-    typical gradient being this photo's median on the object. Kept at PRIOR_SIDE, on the GPU."""
-    import torch
-    import torch.nn.functional as F
-    from moge.model.v2 import MoGeModel
-
-    model = MoGeModel.from_pretrained(str(model_path)).cuda().eval()
-    out = []
-    with torch.no_grad():
-        for image, mask in zip(photos.images, photos.masks):
-            img = torch.from_numpy(image).cuda().permute(2, 0, 1).float()[None] / 255
-            k = PRIOR_SIDE / max(img.shape[-2:])
-            if k < 1:
-                img = F.interpolate(img, scale_factor=k, mode="area")
-            normal = model.infer(img[0])["normal"]  # [h, w, 3]
-            g = img[0].mean(0)
-            gx, gy = g[:, 2:] - g[:, :-2], g[2:] - g[:-2]
-            grad = (F.pad(gx[1:-1], (1, 1, 1, 1)) ** 2 + F.pad(gy[:, 1:-1], (1, 1, 1, 1)) ** 2).sqrt()
-            grad = F.avg_pool2d(grad[None, None], 5, 1, 2)[0, 0]
-            on = torch.ones_like(grad, dtype=torch.bool)
-            if mask is not None:
-                m = torch.from_numpy(mask).cuda()[None, None].float()
-                on = F.interpolate(m, size=grad.shape, mode="nearest")[0, 0] > 0.5
-            typical = grad[on].median().clamp_min(1e-4) if on.any() else grad.median()
-            trust = torch.exp(-((grad / typical) ** 2))
-            out.append(torch.cat([normal, trust[..., None]], -1).half())
-    del model
-    torch.cuda.empty_cache()
-    return out
-
-
-def prior_loss(normals, alphas, viewmat, prior):
-    """Disagreement of the rendered normals (world frame) with the trusted prior normals."""
-    import torch.nn.functional as F
-
-    h, w = alphas.shape[1:3]
-    p = F.interpolate(prior.float().permute(2, 0, 1)[None], size=(h, w), mode="bilinear",
-                      align_corners=False)[0].permute(1, 2, 0)
-    n_prior, trust = F.normalize(p[..., :3], dim=-1), p[..., 3]
-    n_cam = normals[0] @ viewmat[:3, :3].T
-    weight = trust * (alphas[0, ..., 0].detach() > 0.5)
-    return (weight * (1 - (n_cam * n_prior).sum(-1))).sum() / weight.sum().clamp_min(1)
-
-
 def train(dense: Path, use_masks: bool, steps: int = STEPS, progress=lambda f: None,
-          normal_weight: float = 0.05, seed: int = 0, use_multiview: bool = True,
-          use_prior: bool = True):
+          normal_weight: float = 0.05, seed: int = 0, use_multiview: bool = True):
     """Train the splat. Returns (params, photos, cameras, report)."""
     import torch
     from gsplat.strategy import DefaultStrategy
@@ -304,9 +251,6 @@ def train(dense: Path, use_masks: bool, steps: int = STEPS, progress=lambda f: N
     near = neighbours(views)
     near = [[j for j in js if j not in held] for js in near]  # held-out photos stay unseen
     trng = torch.Generator(device=dev).manual_seed(seed)
-    t_prior = time.time()
-    priors = prior_normals(photos) if use_prior else None
-    prior_seconds = round(time.time() - t_prior)
     report_mv = {"photo": [], "geo": []}
     rng = np.random.default_rng(seed)
     order: list[int] = []
@@ -331,8 +275,6 @@ def train(dense: Path, use_masks: bool, steps: int = STEPS, progress=lambda f: N
             loss = loss + normal_weight * (1 - (normals[0] * nd).sum(-1)).mean()
         if step >= DISTORT_FROM * steps:
             loss = loss + 1e-2 * distort.mean()
-        if priors is not None:
-            loss = loss + PRIOR_WEIGHT * prior_loss(normals, alphas, cams[i][0], priors[i])
         if use_multiview and step >= MULTIVIEW_FROM * steps and near[i]:
             j = near[i][rng.integers(len(near[i]))]
             with torch.no_grad():
@@ -358,7 +300,6 @@ def train(dense: Path, use_masks: bool, steps: int = STEPS, progress=lambda f: N
             progress(step / steps)
     report = {"views": len(views), "held_out": len(held), "gaussians": len(params["means"]),
               "steps": steps, "train_seconds": round(time.time() - start),
-              "prior_seconds": prior_seconds if priors is not None else None,
               "gpu_gb": round(torch.cuda.max_memory_allocated() / 2 ** 30, 1)}
     for k, vals in report_mv.items():  # how well the last tenth of training agreed across views
         if vals:
@@ -562,7 +503,6 @@ def main():
     ap.add_argument("--check", action="store_true", help="measure the mesh (quality.py)")
     ap.add_argument("--normal-weight", type=float, default=0.05)
     ap.add_argument("--no-multiview", action="store_true")
-    ap.add_argument("--no-prior", action="store_true")
     ap.add_argument("--depth", choices=["median", "expected"], default="median")
     ap.add_argument("--refuse", action="store_true", help="fuse the splat already in <out> again")
     ap.add_argument("--mesh-name", default="mesh.ply")
@@ -577,7 +517,7 @@ def main():
     try:
         v, f, col, report = make(a.dense, a.out, not a.no_masks, centre, radius, a.steps, show,
                                  depth=a.depth, refuse=a.refuse, normal_weight=a.normal_weight,
-                                 use_multiview=not a.no_multiview, use_prior=not a.no_prior)
+                                 use_multiview=not a.no_multiview)
         m = M.from_arrays(v, f, col)
     except PipelineError as e:
         print(f"PipelineError: {e}", flush=True)

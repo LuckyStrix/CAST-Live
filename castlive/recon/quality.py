@@ -4,8 +4,8 @@
   cover (holes, missing parts) and how much it covers outside it (blobs, extra parts). Mask
   patches the mesh doesn't touch at all are other things the masking model caught (seen: spools
   behind a box) and are left out; a missing part of the object is joined to the rest of it;
-- accuracy: how far COLMAP's best 3D points (seen from 3+ photos, small reprojection error)
-  lie from the surface, as a fraction of the object's size.
+- accuracy: how far COLMAP's best 3D points (seen from 3+ photos, small reprojection error;
+  only the fifth that training never uses) lie from the surface, as a fraction of its size.
 """
 
 from pathlib import Path
@@ -15,18 +15,11 @@ import numpy as np
 from castlive.recon import splat
 
 SCALE = 4  # render the outline at a quarter of the photo size
-MIN_TRACK = 3
-MAX_ERROR_PX = 1.5
 
 
 def good_points(sparse: Path) -> np.ndarray:
-    pts = []
-    for ln in (sparse / "points3D.txt").read_text().splitlines():
-        if ln.strip() and not ln.startswith("#"):
-            t = ln.split()
-            if float(t[7]) <= MAX_ERROR_PX and (len(t) - 8) // 2 >= MIN_TRACK:
-                pts.append([float(v) for v in t[1:4]])
-    return np.array(pts).reshape(-1, 3)
+    """The good points held out from training (so this check stays independent)."""
+    return np.array(list(splat.good_points(sparse, checking=True).values())).reshape(-1, 3)
 
 
 def measure(dense: Path, vertices: np.ndarray, faces: np.ndarray, use_masks: bool) -> dict:

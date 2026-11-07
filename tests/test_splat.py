@@ -12,7 +12,8 @@ IMAGES = ("# i\n"
 POINTS = ("# p\n"
           "7 0.1 0.2 0.3 255 0 0 0.5 1 0 2 0 3 1\n"  # seen 3 times, small error: good
           "8 1 1 1 0 255 0 2.5 1 0 2 0 3 1\n"  # error too big
-          "9 2 2 2 0 0 255 0.2 1 0 2 0\n")  # seen twice
+          "9 2 2 2 0 0 255 0.2 1 0 2 0\n"  # seen twice
+          "10 0 0 1 9 9 9 0.1 1 1 2 1 3 2\n")  # good, kept for checking (id % 5 == 0)
 
 
 @pytest.fixture
@@ -37,8 +38,17 @@ def test_reads_cameras_in_name_order(sparse):
 
 def test_reads_start_points_and_picks_the_good_ones(sparse):
     xyz, rgb = splat.read_points(sparse)
-    assert xyz.shape == (3, 3) and np.allclose(rgb[0], [1, 0, 0])
-    assert np.allclose(quality.good_points(sparse), [[0.1, 0.2, 0.3]])
+    assert xyz.shape == (4, 3) and np.allclose(rgb[0], [1, 0, 0])
+    assert list(splat.good_points(sparse, checking=False)) == [7]
+    assert np.allclose(quality.good_points(sparse), [[0, 0, 1]])  # never used in training
+
+
+def test_anchors_are_the_good_points_each_photo_saw(sparse):
+    views = splat.read_views(sparse)
+    (_, z1), (pix2, z2) = splat.anchors(sparse, views)
+    assert len(z1) == 0  # p1_000001 saw nothing
+    assert np.allclose(z2, [5.3])  # p1_000002 saw 7 (good) and 8 (error too big)
+    assert np.allclose(pix2, [[30 + 90 * 0.1 / 5.3, 25 + 90 * 0.2 / 5.3]])
 
 
 def fake_python(tmp_path, monkeypatch, body: str):

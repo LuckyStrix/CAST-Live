@@ -28,6 +28,9 @@ DISTORT_FROM = 0.1
 MULTIVIEW_FROM = 0.3  # then: patches must match between neighbouring photos (PGSR's idea)
 MULTIVIEW_PIXELS = 4096  # patch centres checked per step
 NCC_WEIGHT, GEO_WEIGHT = 0.15, 0.03
+MIN_TRACK, MAX_ERROR_PX = 3, 1.5  # COLMAP points trusted as measurements
+POINT_HOLD_OUT = 5
+ANCHOR_CLAMP = 0.05  # depth error (fraction) above which a point stops pulling: outliers
 
 
 @dataclass
@@ -76,6 +79,38 @@ def read_points(sparse: Path) -> tuple[np.ndarray, np.ndarray]:
             xyz.append([float(v) for v in t[1:4]])
             rgb.append([int(v) / 255 for v in t[4:7]])
     return np.array(xyz).reshape(-1, 3), np.array(rgb).reshape(-1, 3)
+
+
+def good_points(sparse: Path, checking: bool) -> dict[int, np.ndarray]:
+    """COLMAP's well-measured points: seen in 3+ photos, small reprojection error. id -> xyz.
+    Every POINT_HOLD_OUT-th is kept for checking the surface, the rest may guide training."""
+    out = {}
+    for ln in (sparse / "points3D.txt").read_text().splitlines():
+        if ln.strip() and not ln.startswith("#"):
+            t = ln.split()
+            if (int(t[0]) % POINT_HOLD_OUT == 0) != checking:
+                continue
+            if float(t[7]) <= MAX_ERROR_PX and (len(t) - 8) // 2 >= MIN_TRACK:
+                out[int(t[0])] = np.array([float(v) for v in t[1:4]])
+    return out
+
+
+def anchors(sparse: Path, views: list[View]) -> list[tuple[np.ndarray, np.ndarray]]:
+    """For each photo, the good points it saw itself (so not hidden from it): their pixel
+    (x, y) and depth, projected through the photo's own camera."""
+    good = good_points(sparse, checking=False)
+    seen = {name: [int(i) for i in obs[2::3] if int(i) in good]
+            for _, name, obs in iter_images((sparse / "images.txt").read_text())}
+    out = []
+    for v in views:
+        xyz = np.array([good[i] for i in seen.get(v.name, [])]).reshape(-1, 3)
+        cam = xyz @ v.w2c[:3, :3].T + v.w2c[:3, 3]
+        cam = cam[cam[:, 2] > 0]
+        pix = cam @ v.K.T
+        pix = pix[:, :2] / pix[:, 2:]
+        inside = (pix[:, 0] >= 0) & (pix[:, 0] < v.w) & (pix[:, 1] >= 0) & (pix[:, 1] < v.h)
+        out.append((pix[inside], cam[inside, 2]))
+    return out
 
 
 def centres_of(views: list[View]) -> np.ndarray:
@@ -213,8 +248,27 @@ def multiview(colours, normals, alphas, cam, cam_n, grey_r, grey_n, depth_n, mas
     return photo, geo
 
 
+def anchor_loss(colours, alphas, pix, z, mask):
+    """How far the rendered depth is from COLMAP's triangulated points in this photo (relative,
+    capped so a few wrong points can't pull hard). Plain areas have little else to hold them."""
+    import torch
+    import torch.nn.functional as F
+
+    h, w = alphas.shape[1:3]
+    grid = torch.stack([pix[:, 0] / w * 2 - 1, pix[:, 1] / h * 2 - 1], -1)[None, None]
+    depth = F.grid_sample(colours[0, ..., 3][None, None], grid, align_corners=False)[0, 0, 0]
+    alpha = F.grid_sample(alphas[0, ..., 0][None, None], grid, align_corners=False)[0, 0, 0]
+    ok = alpha > 0.5
+    if mask is not None:
+        ok &= mask[pix[:, 1].long(), pix[:, 0].long()]
+    if ok.sum() < 10:
+        return None
+    return ((depth[ok] - z[ok]).abs() / z[ok]).clamp(max=ANCHOR_CLAMP).mean()
+
+
 def train(dense: Path, use_masks: bool, steps: int = STEPS, progress=lambda f: None,
-          normal_weight: float = 0.05, seed: int = 0, use_multiview: bool = True):
+          normal_weight: float = 0.05, seed: int = 0, use_multiview: bool = True,
+          anchor_weight: float = 0.0):
     """Train the splat. Returns (params, photos, cameras, report)."""
     import torch
     from gsplat.strategy import DefaultStrategy
@@ -260,7 +314,11 @@ def train(dense: Path, use_masks: bool, steps: int = STEPS, progress=lambda f: N
     near = neighbours(views)
     near = [[j for j in js if j not in held] for js in near]  # held-out photos stay unseen
     trng = torch.Generator(device=dev).manual_seed(seed)
-    report_mv = {"photo": [], "geo": []}
+    report_mv = {"photo": [], "geo": [], "anchor": []}
+    held_set = set(held)  # held-out photos' points stay unseen too
+    anchor_t = [(torch.tensor(p, dtype=torch.float32, device=dev),
+                 torch.tensor(z, dtype=torch.float32, device=dev)) if k not in held_set else None
+                for k, (p, z) in enumerate(anchors(text_model(dense), views))]
     rng = np.random.default_rng(seed)
     order: list[int] = []
     start = time.time()
@@ -284,6 +342,12 @@ def train(dense: Path, use_masks: bool, steps: int = STEPS, progress=lambda f: N
             loss = loss + normal_weight * (1 - (normals[0] * nd).sum(-1)).mean()
         if step >= DISTORT_FROM * steps:
             loss = loss + 1e-2 * distort.mean()
+        if anchor_weight and anchor_t[i] is not None and len(anchor_t[i][1]):
+            mask = None if photos.masks[i] is None else torch.from_numpy(photos.masks[i]).to(dev)
+            a = anchor_loss(colours, alphas, *anchor_t[i], mask)
+            if a is not None:
+                loss = loss + anchor_weight * a
+                report_mv["anchor"].append(float(a))
         if use_multiview and step >= MULTIVIEW_FROM * steps and near[i]:
             j = near[i][rng.integers(len(near[i]))]
             with torch.no_grad():
@@ -524,6 +588,7 @@ def main():
     ap.add_argument("--check", action="store_true", help="measure the mesh (quality.py)")
     ap.add_argument("--normal-weight", type=float, default=0.05)
     ap.add_argument("--no-multiview", action="store_true")
+    ap.add_argument("--anchor-weight", type=float, default=0.0)
     ap.add_argument("--depth", choices=["median", "expected"], default="median")
     ap.add_argument("--refuse", action="store_true", help="fuse the splat already in <out> again")
     ap.add_argument("--mesh-name", default="mesh.ply")
@@ -538,7 +603,8 @@ def main():
     try:
         v, f, col, report = make(a.dense, a.out, not a.no_masks, centre, radius, a.steps, show,
                                  depth=a.depth, refuse=a.refuse, normal_weight=a.normal_weight,
-                                 use_multiview=not a.no_multiview)
+                                 use_multiview=not a.no_multiview,
+                                 anchor_weight=a.anchor_weight)
         m = M.from_arrays(v, f, col)
     except PipelineError as e:
         print(f"PipelineError: {e}", flush=True)

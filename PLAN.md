@@ -96,9 +96,20 @@ Reused as-is from CAST: invite/project model, chunked resumable upload, CSP head
    - Tried and dropped (no gain): MoGe-2 normal prior (terracing), expected depth (embosses
      ink), depth anchors at COLMAP points (they already fit; the error sits between them),
      edge-aware smoothness where the photo is plain (left the bulges).
-   - Open: faint relief along glossy ink; SPZ export (phase 5); GPU memory when live SLAM is
-     idle (its model stays loaded, ~4 GB).
-5. **Studio viewers:** Spark splat viewer with the mesh viewer as a toggle (raking light stays on the mesh); downloads SPZ, PLY, GLB.
+   - Fusion: half median, half expected depth over a band of 8 cells (less "orange peel";
+     p99 error against the dense reference 1.1% -> 0.9%), a faint trace of print remains.
+   - Texture: each photo evened out by one colour gain (solved from surface points seen in
+     many photos) and texrecon's outlier removal drops shadowed views per patch: texture
+     agrees 16-22% better with the photos, no loss of sharpness.
+   - Poses: SIFT + incremental mapper tried first: both box scans joined in ~100 s instead
+     of 22-40 min (same cameras to 0.05% of the orbit, lower reprojection error).
+   - Open: faint relief along glossy ink, broad waviness on plain faces; real-world scale.
+5. **Studio viewers — done (7 Nov 2026):** the trained splat drawn as what it is, flat 2D
+   gaussian discs, on the existing three.js viewer (no extra library), placed like the mesh,
+   with a Mesh / Splat switch; downloads GLB and the splat as a standard 3DGS .ply. The live
+   service now loads its model only while someone films (quits after 10 idle minutes), and
+   the code is mounted into the containers: an update is a restart, not a 30 GB rebuild.
+   Still to do: SPZ (smaller splat files), view-dependent colour in the viewer.
 6. **Polish:** quick preview splat after Stop; Android + iPhone tests; docs for untrained users; scale card later.
 
 ## Security (public capture site)

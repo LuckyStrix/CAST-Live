@@ -130,6 +130,11 @@ def main():
     log.info("live: loading MASt3R-SLAM")
     t = time.time()
     slam = Slam()
+    # Warm up: the GPU's first frames run at about half speed (kernels load, tuning runs).
+    noise = np.random.default_rng(0).integers(0, 255, (5, 384, 512, 3), dtype=np.uint8)
+    slam.reset(noise[0])
+    for frame in noise:
+        slam.add(frame)
     log.info("live: ready in %.0f s; waiting for sessions in %s", time.time() - t, root)
     while True:
         (cfg.data / "live.heartbeat").touch()

@@ -179,6 +179,7 @@ $("rec").addEventListener("click", async () => {
   };
   await store.putCapture(recording);
   waitingFor = recording.id; // so a refusal from the server shows even while recording
+  uploader.kick(); // create it on the server now: the live view connects to it straight away
 
   const chunk = Math.min(CHUNK, info.chunk_bytes);
   let n = 0, size = 0, buf = new Blob([]), saving = Promise.resolve();

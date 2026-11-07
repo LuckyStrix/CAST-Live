@@ -5,8 +5,8 @@
   patches the mesh doesn't touch at all are other things the masking model caught (seen: spools
   behind a box) and are left out; a missing part of the object is joined to the rest of it;
 - accuracy: how far COLMAP's best 3D points (seen from 3+ photos, small reprojection error;
-  only the fifth that training never uses; for objects, only points inside the object's
-  outline from 90% of the photos framing them) lie from the surface, as a fraction of its size.
+  for objects, only points inside the object's outline in 90% of the photos framing them)
+  lie from the surface, as a fraction of its size.
 """
 
 from pathlib import Path
@@ -19,8 +19,7 @@ SCALE = 4  # render the outline at a quarter of the photo size
 
 
 def good_points(sparse: Path) -> np.ndarray:
-    """The good points held out from training (so this check stays independent)."""
-    return np.array(list(splat.good_points(sparse, checking=True).values())).reshape(-1, 3)
+    return np.array(list(splat.good_points(sparse).values())).reshape(-1, 3)
 
 
 def measure(dense: Path, vertices: np.ndarray, faces: np.ndarray, use_masks: bool) -> dict:

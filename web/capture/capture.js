@@ -265,10 +265,11 @@ function tick() {
   $("timer").textContent = `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, "0")}`;
   // Without a gyroscope, assume about 40 s per loop.
   const passStart = recording.meta.markers.filter((m) => m.event === "start" || m.event === "pass2_start").pop().t;
-  // Live coverage when the tracker has it; else the motion sensor; else the clock.
+  // Round complete when the live coverage or the motion sensor says so (without a sensor, the
+  // clock): the live estimate can be a sector or two short while it settles.
   const cov = live && live.current();
-  const f = cov ? Math.min(1, cov.covered / FULL)
-    : turn.hasSensor ? turn.fraction() : Math.min(1, (sec - passStart) / 40);
+  const moved = turn.hasSensor ? turn.fraction() : Math.min(1, (sec - passStart) / 40);
+  const f = cov ? Math.max(Math.min(1, cov.covered / FULL), moved) : moved;
   setRing(f);
   if (cov && cov.placed === false) warn(t("warn_lost"));
   if (f >= 1 && pass === 1 && $("flip").hidden) endPass1();

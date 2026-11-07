@@ -309,7 +309,9 @@ def create_app(cfg: config.Config | None = None) -> FastAPI:
             await ws.send_json({"status": "refused"})
             await ws.close()
             return
-        if live_now:
+        with db.connect(cfg.db) as con:  # a model being made has the GPU: no live view then
+            making = con.execute("SELECT 1 FROM captures WHERE status = 'processing'").fetchone()
+        if live_now or making:
             await ws.send_json({"status": "busy"})
             await ws.close()
             return

@@ -11,6 +11,7 @@ import pytest
 from PIL import Image
 from starlette.websockets import WebSocketDisconnect
 
+from castlive.common import db
 from castlive.live import coverage, service
 from castlive.live import session as S
 
@@ -169,6 +170,16 @@ def test_live_socket_one_session_at_a_time(capture, token):
         time.sleep(0.1)
         with capture.websocket_connect(f"/live/{token}/{other}") as ws2:
             assert ws2.receive_json() == {"status": "busy"}
+
+
+def test_no_live_view_while_a_model_is_being_made(capture, token, cfg):
+    other = str(uuid.uuid4())
+    start_capture(capture, token)
+    start_capture(capture, token, other)
+    with db.connect(cfg.db) as con:
+        db.set_capture(con, other, status="processing")
+    with capture.websocket_connect(f"/live/{token}/{CID}") as ws:
+        assert ws.receive_json() == {"status": "busy"}
 
 
 def test_reconstruction_waits_while_someone_films_live(cfg):

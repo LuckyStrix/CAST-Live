@@ -230,7 +230,7 @@ $("rec").addEventListener("click", async () => {
 function startLive() {
   live = new Live($("preview"));
   live.onUpdate = () => {
-    if (live.status === "busy") warn(t("live_busy"), 4000);
+    if (live.status === "busy") warn(t("live_busy"), 6000);
     const cov = live.current();
     $("top").classList.toggle("live", !!cov);
     if (cov) drawSectors($("sectors"), cov);

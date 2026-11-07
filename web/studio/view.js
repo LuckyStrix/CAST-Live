@@ -88,6 +88,7 @@ async function load() {
     splats.mesh.visible = false;
     scene.add(splats.mesh);
     document.getElementById("show-label").hidden = false;
+    if (new URLSearchParams(location.search).get("show") === "splat") document.getElementById("show").value = "splat";
     const dl = document.getElementById("download-splat");
     dl.href = `/api/captures/${cid}/splat.ply`;
     dl.hidden = false;

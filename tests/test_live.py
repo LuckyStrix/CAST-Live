@@ -194,3 +194,13 @@ def test_studio_serves_the_live_state(studio, cfg):
     assert len(studio.get(f"/api/captures/{CID}/live/points").content) == 4 + 2 * 9
     assert studio.get("/api/captures/../live").status_code == 404
     assert "wss://testserver" in studio.get("/live").headers["content-security-policy"]
+
+
+def test_web_apps_do_not_need_numpy():
+    """The web image has no numpy: capture and studio must import without it."""
+    import subprocess
+    import sys
+
+    code = ("import sys; sys.modules['numpy'] = None\n"
+            "import castlive.capture.app, castlive.studio.app")
+    assert subprocess.run([sys.executable, "-c", code], check=False).returncode == 0

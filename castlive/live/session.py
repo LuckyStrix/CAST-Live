@@ -16,8 +16,6 @@ import os
 import struct
 from pathlib import Path
 
-import numpy as np
-
 POINT_UNITS = 8000  # int16 units per orbit radius: points up to 4 radii from the centre fit
 
 
@@ -63,15 +61,21 @@ def pending(sess: Path) -> list[tuple[int, int, Path]]:
     return sorted(out)
 
 
-def pack_points(xyz: np.ndarray, rgb: np.ndarray) -> bytes:
+# numpy is imported only where needed: the web apps (no numpy) use this module too.
+
+def pack_points(xyz, rgb) -> bytes:
     """uint32 count, then count*3 int16 positions (orbit radii * POINT_UNITS), then count*3
     uint8 colours. Little-endian; easy to read in a browser with typed arrays."""
+    import numpy as np
+
     q = np.clip(np.round(np.asarray(xyz, np.float64) * POINT_UNITS), -32767, 32767).astype("<i2")
     c = np.asarray(rgb, np.uint8).reshape(-1, 3)
     return struct.pack("<I", len(q)) + q.tobytes() + c.tobytes()
 
 
-def unpack_points(raw: bytes) -> tuple[np.ndarray, np.ndarray]:
+def unpack_points(raw: bytes):
+    import numpy as np
+
     (n,) = struct.unpack_from("<I", raw)
     xyz = np.frombuffer(raw, "<i2", 3 * n, 4).reshape(-1, 3) / POINT_UNITS
     rgb = np.frombuffer(raw, np.uint8, 3 * n, 4 + 6 * n).reshape(-1, 3)

@@ -45,7 +45,8 @@ def measure(dense: Path, vertices: np.ndarray, faces: np.ndarray, use_masks: boo
         for v in splat.read_views(dense / "sparse"):
             w, h = max(1, v.w // SCALE), max(1, v.h // SCALE)
             K = v.K.copy()
-            K[:2] /= v.w / w, v.h / h
+            K[0] *= w / v.w
+            K[1] *= h / v.h
             rays = scene.create_rays_pinhole(intrinsic_matrix=K, extrinsic_matrix=v.w2c,
                                              width_px=w, height_px=h)
             hit = np.isfinite(scene.cast_rays(rays)["t_hit"].numpy())

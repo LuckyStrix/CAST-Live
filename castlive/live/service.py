@@ -19,6 +19,7 @@ from castlive.live import session as S
 log = logging.getLogger("castlive.live")
 IDLE_END = 20  # seconds without a frame: the phone has gone; end the session
 STALE = 15 * 60  # a session nobody finished or tracked within this long is dropped
+KEEP = 2 * 24 * 3600  # a finished session's files are kept this long (studio's watch page)
 POINTS = 4000  # preview points sent to the phone
 CAMERAS = 300  # recent camera positions sent
 WRITE_EVERY = 0.7  # seconds between updates
@@ -65,8 +66,12 @@ def run(sess: Path, slam, clock=time.time, sleep=time.sleep) -> dict:
     """Track one session until the phone ends it or goes quiet. Returns the final state."""
     out = sess / "out"
     state = {"status": "tracking", "passes": {}, "started": clock()}
-    p, last_frame, last_write = None, clock(), 0.0
+    p, last_frame, last_write, last_beat = None, clock(), 0.0, 0.0
+    beat = sess.parent.parent / "live.heartbeat"  # /data: the reconstructor checks it
     while True:
+        if clock() - last_beat > 5:
+            beat.touch()
+            last_beat = clock()
         control = S.read_json(sess / "control.json", {})
         frames = S.pending(sess)
         while len(frames) > 2 and frames[0][0] == frames[1][0]:  # behind: skip to the newest
@@ -116,7 +121,10 @@ def waiting(root: Path, clock=time.time) -> Path | None:
     found = []
     for control in root.glob("*/control.json"):
         sess = control.parent
-        if (sess / "out" / "done").exists():
+        done = sess / "out" / "done"
+        if done.exists():
+            if clock() - done.stat().st_mtime > KEEP:  # the studio's watch page is long over
+                shutil.rmtree(sess, ignore_errors=True)
             continue
         age = clock() - control.stat().st_mtime
         if age > STALE:
@@ -133,6 +141,7 @@ def main():
     cfg = config.load()
     root = S.root(cfg.data)
     root.mkdir(parents=True, exist_ok=True)
+    (root / "active").unlink(missing_ok=True)  # left by a service that stopped mid-session
     from castlive.live.slam import Slam
 
     # Load the model before anyone films: it takes from half a minute to a few minutes.

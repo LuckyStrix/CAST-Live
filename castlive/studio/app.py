@@ -167,24 +167,24 @@ def create_app(cfg: config.Config | None = None) -> FastAPI:
             raise HTTPException(404, "not made yet")
         return path
 
-    def live_file(cid: str, name: str) -> Path:
+    def live_file(cid: str, name: str, media_type: str) -> Response:
+        """One read of a file the live service replaces every second: size and bytes agree."""
         if not db.is_capture_id(cid):
             raise HTTPException(404, "no such capture")
-        path = live.session(cfg.data, cid) / "out" / name
-        if not path.exists():
-            raise HTTPException(404, "no live view yet")
-        return path
+        try:
+            data = (live.session(cfg.data, cid) / "out" / name).read_bytes()
+        except OSError:
+            raise HTTPException(404, "no live view yet") from None
+        return Response(data, media_type=media_type, headers={"Cache-Control": "no-store"})
 
     @app.get("/api/captures/{cid}/live")
     def live_state(cid: str):
         """The live tracking state while (and after) the phone films."""
-        return FileResponse(live_file(cid, "state.json"), media_type="application/json",
-                            headers={"Cache-Control": "no-store"})
+        return live_file(cid, "state.json", "application/json")
 
     @app.get("/api/captures/{cid}/live/points")
     def live_points(cid: str):
-        return FileResponse(live_file(cid, "points.bin"), media_type="application/octet-stream",
-                            headers={"Cache-Control": "no-store"})
+        return live_file(cid, "points.bin", "application/octet-stream")
 
     @app.get("/api/captures/{cid}/model.glb")
     def model(cid: str):

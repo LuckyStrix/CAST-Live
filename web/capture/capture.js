@@ -179,7 +179,8 @@ $("rec").addEventListener("click", async () => {
   };
   await store.putCapture(recording);
   waitingFor = recording.id; // so a refusal from the server shows even while recording
-  uploader.kick(); // create it on the server now: the live view connects to it straight away
+  // create it on the server now: the live view connects to it straight away
+  uploader.create(recording).catch(() => {}).finally(() => uploader.kick());
 
   const chunk = Math.min(CHUNK, info.chunk_bytes);
   let n = 0, size = 0, buf = new Blob([]), saving = Promise.resolve();
@@ -230,7 +231,7 @@ $("rec").addEventListener("click", async () => {
 function startLive() {
   live = new Live($("preview"));
   live.onUpdate = () => {
-    if (live.status === "busy") warn(t("live_busy"), 6000);
+    if (live.status === "busy") warn(t(live.why === "model" ? "live_busy" : "live_in_use"), 6000);
     const cov = live.current();
     $("top").classList.toggle("live", !!cov);
     if (cov) drawSectors($("sectors"), cov);
@@ -264,7 +265,10 @@ function tick() {
   // clock): the live estimate can be a sector or two short while it settles.
   const cov = live && live.current();
   const moved = turn.hasSensor ? turn.fraction() : Math.min(1, (sec - passStart) / 40);
-  const f = cov ? Math.max(Math.min(1, cov.covered / FULL), moved) : moved;
+  // An early coverage estimate can jump (the centre is still a guess): trust it once the pass has
+  // run a while and the sensor (or clock) agrees it is at least half way round.
+  const trusted = cov && sec - passStart > 20 && moved >= 0.5;
+  const f = trusted ? Math.max(Math.min(1, cov.covered / FULL), moved) : moved;
   setRing(f);
   const now = live && live.info();
   if (now && now.placed === false) warn(t("warn_lost"));

@@ -123,16 +123,22 @@ export class Uploader {
     }
   }
 
+  /** Make the capture on the server now, even while another one is uploading (the live view
+   * needs it as filming starts). Failures are left to the upload loop, which tries again. */
+  async create(c) {
+    const r = await api("POST", `/api/${c.token}/captures`,
+      { id: c.id, mode: c.mode, mime: c.mime, consent: true, device: c.device });
+    await store.patchCapture(c.id, { created_on_server: true });
+    return new Set(r.have);
+  }
+
   // Send what is stored for one capture. True if it made progress.
   async send(c) {
     this.current = c.id;
     const base = `/api/${c.token}/captures`;
-    let have = new Set();
-    if (!c.created_on_server) {
-      const r = await api("POST", base, { id: c.id, mode: c.mode, mime: c.mime, consent: true, device: c.device });
-      have = new Set(r.have);
-      await store.patchCapture(c.id, { created_on_server: true });
-    }
+    const fresh = await store.getCapture(c.id); // create() may have run since the list was read
+    if (!fresh) return false;
+    const have = fresh && fresh.created_on_server ? new Set() : await this.create(c);
     const keys = (await store.chunkKeys(c.id)).map(([, n]) => n).sort((a, b) => a - b);
     let progressed = false;
     for (const n of keys) {

@@ -311,8 +311,8 @@ def create_app(cfg: config.Config | None = None) -> FastAPI:
             return
         with db.connect(cfg.db) as con:  # a model being made has the GPU: no live view then
             making = con.execute("SELECT 1 FROM captures WHERE status = 'processing'").fetchone()
-        if live_now or making:
-            await ws.send_json({"status": "busy"})
+        if live_now or making:  # why: the phone says which
+            await ws.send_json({"status": "busy", "why": "model" if making else "in_use"})
             await ws.close()
             return
         live_now.add(cid)
@@ -324,6 +324,7 @@ def create_app(cfg: config.Config | None = None) -> FastAPI:
         async def send_updates():
             seen = {}
             while True:
+                finished = (sess / "out" / "done").exists()  # before reading: send the final state
                 for name in ("state.json", "overlay.bin"):
                     f = sess / "out" / name
                     try:
@@ -337,7 +338,7 @@ def create_app(cfg: config.Config | None = None) -> FastAPI:
                             await ws.send_text(data.decode())
                         else:
                             await ws.send_bytes(data)
-                if (sess / "out" / "done").exists():
+                if finished:
                     return
                 await asyncio.sleep(0.15)  # the overlay should trail the camera as little as can be
 
@@ -351,7 +352,8 @@ def create_app(cfg: config.Config | None = None) -> FastAPI:
                 if msg.get("bytes") is not None:
                     now = time.monotonic()
                     raw = msg["bytes"]
-                    if now - last < LIVE_GAP or queued(sess) >= LIVE_QUEUE:
+                    if (now - last < LIVE_GAP or queued(sess) >= LIVE_QUEUE
+                            or (sess / "out" / "done").exists()):  # nobody will read it
                         continue
                     if not await run_in_threadpool(good_jpeg, raw):
                         continue

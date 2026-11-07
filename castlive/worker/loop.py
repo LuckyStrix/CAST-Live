@@ -139,17 +139,30 @@ class Tracker:
 
 
 LIVE_WAIT_MAX = 20 * 60  # longest a reconstruction waits for a live session (seconds)
+LIVE_HEARTBEAT_MAX = 60  # seconds: a live service quieter than this has stopped
+
+
+def live_filming(cfg: config.Config, clock=time.time) -> str | None:
+    """The capture being filmed with the live view on, or None. A lock left by a live service
+    that has stopped (its heartbeat is old) doesn't count."""
+    try:
+        beat = (cfg.data / "live.heartbeat").stat().st_mtime
+        who = (cfg.data / "live" / "active").read_text(errors="replace")
+    except OSError:  # no lock (or it went just now)
+        return None
+    return who if clock() - beat < LIVE_HEARTBEAT_MAX else None
 
 
 def wait_for_live(cfg: config.Config, sleep=time.sleep, clock=time.time) -> None:
     """Someone is filming with the live view on: the GPU is theirs. Wait between stages."""
-    active = cfg.data / "live" / "active"
     start = clock()
-    if active.exists():
-        log.info("waiting: live session %s is using the GPU", active.read_text(errors="replace"))
-    while active.exists() and clock() - start < LIVE_WAIT_MAX:
+    who = live_filming(cfg, clock)
+    if who:
+        log.info("waiting: live session %s is using the GPU", who)
+    while who and clock() - start < LIVE_WAIT_MAX:
         (cfg.data / "reconstructor.heartbeat").touch()
         sleep(2)
+        who = live_filming(cfg, clock)
 
 
 MAX_ATTEMPTS = 2  # a capture whose reconstruction kills the process (out of memory) twice fails

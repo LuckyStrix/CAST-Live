@@ -126,6 +126,8 @@ def test_service_closes_stale_sessions(tmp_path):
     assert service.waiting(root, clock=lambda: time.time() + 60) in (root / "old", root / "new")
     assert service.waiting(root, clock=lambda: time.time() + service.STALE + 5) is None
     assert (root / "old" / "out" / "done").exists()
+    service.waiting(root, clock=lambda: time.time() + service.KEEP + 5)
+    assert not (root / "old").exists()  # long finished: cleared away
 
 
 # --- The capture site's WebSocket ------------------------------------------------------------
@@ -169,7 +171,7 @@ def test_live_socket_one_session_at_a_time(capture, token):
     with capture.websocket_connect(f"/live/{token}/{CID}"):
         time.sleep(0.1)
         with capture.websocket_connect(f"/live/{token}/{other}") as ws2:
-            assert ws2.receive_json() == {"status": "busy"}
+            assert ws2.receive_json() == {"status": "busy", "why": "in_use"}
 
 
 def test_no_live_view_while_a_model_is_being_made(capture, token, cfg):
@@ -179,7 +181,7 @@ def test_no_live_view_while_a_model_is_being_made(capture, token, cfg):
     with db.connect(cfg.db) as con:
         db.set_capture(con, other, status="processing")
     with capture.websocket_connect(f"/live/{token}/{CID}") as ws:
-        assert ws.receive_json() == {"status": "busy"}
+        assert ws.receive_json() == {"status": "busy", "why": "model"}
 
 
 def test_reconstruction_waits_while_someone_films_live(cfg):
@@ -187,6 +189,7 @@ def test_reconstruction_waits_while_someone_films_live(cfg):
 
     active = cfg.data / "live" / "active"
     S.write_atomic(active, CID.encode())
+    (cfg.data / "live.heartbeat").touch()
     naps = []
 
     def sleep(s):
@@ -197,6 +200,9 @@ def test_reconstruction_waits_while_someone_films_live(cfg):
     wait_for_live(cfg, sleep=sleep)
     assert len(naps) == 3
     wait_for_live(cfg, sleep=sleep)  # no live session: no wait
+    assert len(naps) == 3
+    S.write_atomic(active, CID.encode())  # left by a live service that has stopped
+    wait_for_live(cfg, sleep=sleep, clock=lambda: time.time() + 3600)
     assert len(naps) == 3
 
 

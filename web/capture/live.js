@@ -30,7 +30,7 @@ export class Live {
       if (typeof e.data === "string") {
         let s;
         try { s = JSON.parse(e.data); } catch { return; }
-        if (s.status === "busy" || s.status === "refused") this.status = s.status;
+        if (s.status === "busy" || s.status === "refused") { this.status = s.status; this.why = s.why; }
         else { this.state = s; this.stateAt = Date.now(); }
       } else { this.overlay = e.data; this.overlayAt = Date.now(); }
       this.onUpdate();

@@ -61,7 +61,7 @@ class Slam:
         import torch
         import torch.multiprocessing as mp
         from mast3r_slam.config import load_config
-        from mast3r_slam.mast3r_utils import load_mast3r
+        from mast3r_slam.mast3r_utils import load_mast3r, load_retriever
 
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.set_grad_enabled(False)
@@ -69,22 +69,30 @@ class Slam:
         self.torch, self.m3, self.device = torch, m3, device
         self.manager = mp.Manager()
         self.model = load_mast3r(device=device)
+        self.retriever = load_retriever(self.model)  # once: reset() only empties its database
+        self.keyframes = None
         self.n = 0
 
     def reset(self, first: np.ndarray) -> None:
         """A new pass: forget everything tracked so far. `first`: an RGB uint8 frame."""
         from mast3r_slam.frame import SharedKeyframes, SharedStates
         from mast3r_slam.global_opt import FactorGraph
-        from mast3r_slam.mast3r_utils import load_retriever, resize_img
+        from mast3r_slam.mast3r_utils import resize_img
         from mast3r_slam.tracker import FrameTracker
 
         h, w = resize_img(first.astype(np.float32) / 255, SIZE)["img"][0].shape[1:]
         self.shape = first.shape
+        # free the last pass's GPU buffers before making new ones (they are large)
+        self.keyframes = self.states = self.tracker = self.seen = self.last = None
+        self.m3.factor_graph = None
+        self.torch.cuda.empty_cache()
         self.keyframes = SharedKeyframes(self.manager, h, w)
         self.states = SharedStates(self.manager, h, w)
         self.tracker = FrameTracker(self.model, self.keyframes, self.device)
         self.m3.factor_graph = FactorGraph(self.model, self.keyframes, None, self.device)
-        self.m3.retrieval_database = load_retriever(self.model)
+        db = self.retriever
+        db.ivf_builder, db.kf_counter, db.kf_ids = db.asmk.create_ivf_builder(), 0, []
+        self.m3.retrieval_database = db
         self.n = 0
         self.track: list = []  # per placed frame: (its keyframe, pose relative to it)
         self.seen = None  # SeenFrom, made with the first frame (it sets the cube size)
@@ -192,11 +200,15 @@ class Slam:
         """Up to `limit` confident points from the keyframes (world, RGB uint8)."""
         xyz, rgb = [], []
         with self.keyframes.lock:
-            for i in range(len(self.keyframes)):
+            n = len(self.keyframes)
+            each = 2 * limit // max(1, n) + 1  # sampled on the GPU: copy only what may be sent
+            for i in range(n):
                 kf = self.keyframes[i]
-                ok = (kf.get_average_conf().reshape(-1) > CONF_MIN).cpu().numpy()
-                xyz.append(kf.T_WC.act(kf.X_canon).cpu().numpy().reshape(-1, 3)[ok])
-                rgb.append((kf.uimg.cpu().numpy().reshape(-1, 3)[ok] * 255).astype(np.uint8))
+                ok = (kf.get_average_conf().reshape(-1) > CONF_MIN).nonzero()[:, 0]
+                ok = ok[self.torch.randperm(len(ok), device=ok.device)[:each]]
+                X = kf.T_WC.act(kf.X_canon).reshape(-1, 3)
+                xyz.append(X[ok.to(X.device)].cpu().numpy())
+                rgb.append((kf.uimg.reshape(-1, 3)[ok.to(kf.uimg.device)] * 255).byte().cpu().numpy())
         if not xyz:
             return np.zeros((0, 3)), np.zeros((0, 3), np.uint8)
         xyz, rgb = np.concatenate(xyz), np.concatenate(rgb)

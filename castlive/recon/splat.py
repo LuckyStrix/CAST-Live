@@ -576,11 +576,8 @@ def make(dense: Path, out: Path, use_masks: bool, centre: np.ndarray, radius: fl
     return verts, faces, colours, report
 
 
-def main():
+def parser():
     import argparse
-    import sys
-
-    from castlive.recon import mesh as M
 
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("dense", type=Path)
@@ -600,7 +597,15 @@ def main():
     ap.add_argument("--band", type=float, default=BAND, help="fusion band, in grid cells")
     ap.add_argument("--refuse", action="store_true", help="fuse the splat already in <out> again")
     ap.add_argument("--mesh-name", default="mesh.ply")
-    a = ap.parse_args()
+    return ap
+
+
+def main():
+    import sys
+
+    from castlive.recon import mesh as M
+
+    a = parser().parse_args()
     views = read_views(text_model(a.dense))
     c = centres_of(views)
     centre = (np.array([float(x) for x in a.centre.split(",")]) if a.centre

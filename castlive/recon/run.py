@@ -212,7 +212,8 @@ def run_splat(dense: Path, out: Path, use_masks: bool, centre, radius: float, lo
     """The splat stage in its own process: PyTorch's CUDA libraries stay out of this one (the
     masks' ONNX Runtime brings others), and its GPU memory is freed when it ends."""
     cmd = [sys.executable, "-m", "castlive.recon.splat", str(dense), str(out), "--progress",
-           "--centre", ",".join(f"{x:.9g}" for x in centre), "--radius", f"{radius:.9g}"]
+           # "=": a centre starting with a minus sign would otherwise read as an option
+           "--centre=" + ",".join(f"{x:.9g}" for x in centre), f"--radius={radius:.9g}"]
     if not use_masks:
         cmd.append("--no-masks")
     last, error = "", None

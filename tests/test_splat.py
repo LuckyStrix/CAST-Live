@@ -50,6 +50,14 @@ def fake_python(tmp_path, monkeypatch, body: str):
     monkeypatch.setattr(run.sys, "executable", str(exe))
 
 
+def test_run_splat_arguments_parse_with_a_negative_centre(tmp_path, monkeypatch):
+    args = tmp_path / "args"
+    fake_python(tmp_path, monkeypatch, f'printf "%s\\n" "$@" > {args}\necho "{{}}"\n')
+    run.run_splat(tmp_path, tmp_path / "s", True, [-0.13, 0.4, -0.08], 2.5, tmp_path / "log")
+    a = splat.parser().parse_args(args.read_text().splitlines()[2:])  # after -m <module>
+    assert a.centre == "-0.13,0.4,-0.08" and a.radius == 2.5 and not a.no_masks
+
+
 def test_run_splat_reports_progress_and_result(tmp_path, monkeypatch):
     fake_python(tmp_path, monkeypatch, "echo 'progress 0.5'\necho 'training'\n"
                                        "echo '{\"gaussians\": 5}'\necho 'UserWarning: x'\n")

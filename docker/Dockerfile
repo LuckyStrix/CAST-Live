@@ -7,10 +7,11 @@ RUN apt-get update \
 
 RUN useradd --create-home --uid 1000 castlive && mkdir /data && chown castlive /data
 WORKDIR /app
+# Settings first, code last: a code change then rebuilds only the last layers (the classic
+# builder takes minutes per step on these large images).
+ENV CASTLIVE_DATA=/data CASTLIVE_WEB=/app/web PYTHONUNBUFFERED=1
 COPY pyproject.toml ./
 COPY castlive ./castlive
 COPY web ./web
 RUN pip install --no-cache-dir .
-
-ENV CASTLIVE_DATA=/data CASTLIVE_WEB=/app/web PYTHONUNBUFFERED=1
 USER castlive

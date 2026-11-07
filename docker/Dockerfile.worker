@@ -75,11 +75,13 @@ USER root
 COPY --from=texrecon /src/build/apps/texrecon/texrecon /usr/local/bin/texrecon
 
 WORKDIR /app
+# Settings first, code last: a code change then rebuilds only the last layers (the classic
+# builder takes minutes per step on these large images).
+RUN pip install --no-cache-dir fastapi uvicorn segno
+ENV CASTLIVE_DATA=/data CASTLIVE_WEB=/app/web
+CMD ["castlive-worker", "--reconstruct"]
 COPY pyproject.toml ./
 COPY castlive ./castlive
 COPY web ./web
-RUN pip install --no-cache-dir --no-deps . && pip install --no-cache-dir fastapi uvicorn segno
-
-ENV CASTLIVE_DATA=/data CASTLIVE_WEB=/app/web
+RUN pip install --no-cache-dir --no-deps .
 USER castlive
-CMD ["castlive-worker", "--reconstruct"]

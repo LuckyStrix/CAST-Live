@@ -53,11 +53,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends libusb-1.0-0 \
 # uid 1000 owns /data in every CAST Live container
 RUN useradd --create-home --uid 1000 castlive && mkdir -p /data && chown castlive /data
 WORKDIR /app
-COPY pyproject.toml ./
-COPY castlive ./castlive
-RUN pip install --no-cache-dir --no-deps .
 # The MASt3R checkpoints are older pickles that PyTorch 2.6+ won't load by default; they are the
 # official files, checked above.
 ENV CASTLIVE_DATA=/data PYTHONUNBUFFERED=1 TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1
-USER castlive
 CMD ["castlive-live"]
+# Settings first, code last: a code change then rebuilds only the last layers (the classic
+# builder takes minutes per step on these large images).
+COPY pyproject.toml ./
+COPY castlive ./castlive
+RUN pip install --no-cache-dir --no-deps .
+USER castlive

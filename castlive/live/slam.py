@@ -41,7 +41,7 @@ class SeenFrom:
 
     def add(self, pts, centre) -> None:
         """Points (N, 3) seen from a camera at `centre` (3,)."""
-        d = pts - centre
+        d = (pts - centre).to(self.dirs.dtype)
         d = d / d.norm(dim=1, keepdim=True).clamp_min(1e-9)
         b = (d @ self.dirs.T).argmax(1)
         new = self.torch.unique(self._keys(pts) * 32 + b)

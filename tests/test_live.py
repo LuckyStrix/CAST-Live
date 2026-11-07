@@ -60,16 +60,20 @@ def test_coverage_uses_fallback_while_rays_are_parallel():
 
 class FakeSlam:
     def __init__(self):
-        self.resets, self.cams = 0, iter(zip(*ring(200)))
+        self.resets, self.placed = 0, 0
 
     def reset(self, first):
         self.resets += 1
+        self.placed = 0
 
     def add(self, rgb):
-        return rgb.shape == (240, 320, 3)
+        ok = rgb.shape == (240, 320, 3)
+        self.placed += ok
+        return ok
 
-    def camera(self):
-        return next(self.cams)
+    def cameras(self):  # placed frames walk round a circle, 20 degrees apart
+        c, f, u = ring(18)
+        return c[:self.placed], f[:self.placed], u[:self.placed]
 
     def points(self, limit):
         rng = np.random.default_rng(1)

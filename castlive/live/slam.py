@@ -49,6 +49,7 @@ class Slam:
         self.m3.factor_graph = FactorGraph(self.model, self.keyframes, None, self.device)
         self.m3.retrieval_database = load_retriever(self.model)
         self.n = 0
+        self.track: list = []  # per placed frame: (its keyframe, pose relative to it)
 
     def add(self, rgb: np.ndarray) -> bool:
         """Track one RGB uint8 frame (same size as the first). True if it was placed."""
@@ -66,6 +67,7 @@ class Slam:
         frame = create_frame(self.n, img, T_WC, img_size=SIZE, device=self.device)
         self.n += 1
         placed, new_kf = True, False
+        ref = len(keyframes) - 1  # the tracker places a frame against the last keyframe
         if mode == Mode.INIT:
             X, C = mast3r_inference_mono(self.model, frame)
             frame.update_pointmap(X, C)
@@ -73,6 +75,7 @@ class Slam:
             states.queue_global_optimization(len(keyframes) - 1)
             states.set_mode(Mode.TRACKING)
             states.set_frame(frame)
+            self.track.append((0, lietorch.Sim3.Identity(1, device=self.device).data))
             return True
         if mode == Mode.TRACKING:
             new_kf, _, try_reloc = self.tracker.track(frame)
@@ -86,24 +89,31 @@ class Slam:
             states.set_frame(frame)
             states.queue_reloc()
             placed = False
+        if placed:  # remember it relative to its keyframe, which the backend keeps correcting
+            kf = lietorch.Sim3(keyframes.T_WC[ref])
+            self.track.append((ref, (kf.inv() * frame.T_WC).data))
         if new_kf:
             keyframes.append(frame)
             states.queue_global_optimization(len(keyframes) - 1)
         self.m3.run_backend(states, keyframes)
         return placed and states.get_mode() == Mode.TRACKING
 
-    @staticmethod
-    def _pose(T) -> tuple[np.ndarray, np.ndarray]:
-        """Sim3 (t, quaternion xyzw, scale) -> camera centre, rotation camera-to-world."""
+    def cameras(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Every placed frame's centre, viewing direction and image-up direction, from its
+        keyframe's latest (optimised) pose: positions as tracked drift until corrected."""
+        import lietorch
         from scipy.spatial.transform import Rotation
 
-        d = T.data.detach().cpu().numpy().reshape(-1)
-        return d[:3], Rotation.from_quat(d[3:7]).as_matrix()
-
-    def camera(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """The last frame's centre, viewing direction and image-up direction."""
-        c, R = self._pose(self.states.get_frame().T_WC)
-        return c, R[:, 2], -R[:, 1]
+        if not self.track:
+            return np.zeros((0, 3)), np.zeros((0, 3)), np.zeros((0, 3))
+        torch = self.torch
+        refs = torch.tensor([r for r, _ in self.track], device=self.device)
+        rel = lietorch.Sim3(torch.cat([d.reshape(1, -1) for _, d in self.track]))
+        with self.keyframes.lock:
+            kf = lietorch.Sim3(self.keyframes.T_WC[refs].reshape(len(self.track), -1))
+        d = (kf * rel).data.detach().cpu().numpy()
+        R = Rotation.from_quat(d[:, 3:7]).as_matrix()
+        return d[:, :3], R[:, :, 2], -R[:, :, 1]
 
     def points(self, limit: int) -> tuple[np.ndarray, np.ndarray]:
         """Up to `limit` confident points from the keyframes (world, RGB uint8)."""

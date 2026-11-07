@@ -40,18 +40,17 @@ class Pass:
     def __init__(self, number: int, started: float):
         self.number, self.started, self.frames, self.tracked = number, started, 0, 0
         self.placed = False  # was the last frame placed? (False: tracking is lost)
-        self.cams: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
 
 
 def summary(p: Pass, slam) -> tuple[dict, bytes | None]:
     """State for this pass, and the preview points (None until there is enough to show)."""
     out = {"pass": p.number, "frames": p.frames, "tracked": p.tracked, "placed": p.placed}
-    if len(p.cams) < 3:
+    c, f, u = slam.cameras()
+    if len(c) < 3:
         return out, None
     xyz, rgb = slam.points(POINTS)
     if not len(xyz):
         return out, None
-    c, f, u = (np.array(a) for a in zip(*p.cams))
     centre, R, radius = coverage.frame(c, f, u, fallback=np.median(xyz, axis=0))
     out.update(coverage.measure(c, centre, R, radius))
     out["cameras"] = np.round(coverage.normalise(c[-CAMERAS:], centre, R, radius), 3).tolist()
@@ -83,7 +82,6 @@ def run(sess: Path, slam, clock=time.time, sleep=time.sleep) -> dict:
                 p.placed = slam.add(img)
                 if p.placed:
                     p.tracked += 1
-                    p.cams.append(slam.camera())
         else:
             sleep(0.05)
         ended = control.get("ended") and not frames or clock() - last_frame > IDLE_END

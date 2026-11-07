@@ -77,3 +77,30 @@ def test_faces_point_outward():
     assert (splat.outward(v, out[:, ::-1], inward) == out).all()
     one = out[3:]  # a single open face
     assert (splat.outward(v, one[:, ::-1], inward) == one).all()
+
+
+def test_viewer_file_has_placed_discs(tmp_path):
+    names = (["x", "y", "z", "nx", "ny", "nz", "f_dc_0", "f_dc_1", "f_dc_2"]
+             + [f"f_rest_{i}" for i in range(45)] + ["opacity", "scale_0", "scale_1", "scale_2"]
+             + [f"rot_{i}" for i in range(4)])
+    rows = np.zeros((2, len(names)), np.float32)
+    col = {n: i for i, n in enumerate(names)}
+    rows[:, col["x"]] = [1, 5]
+    rows[:, col["opacity"]] = [3, -6]  # the second is nearly transparent: left out
+    rows[0, col["scale_0"]], rows[0, col["scale_1"]] = np.log(0.2), np.log(0.1)
+    rows[0, col["rot_3"]] = rows[0, col["rot_0"]] = np.sqrt(0.5)  # 90 degrees about z
+    rows[0, col["f_dc_0"]] = 0.5 / splat.SH0  # red channel 1.0
+    header = ("ply\nformat binary_little_endian 1.0\nelement vertex 2\n"
+              + "".join(f"property float {n}\n" for n in names) + "end_header\n")
+    ply = tmp_path / "splat.ply"
+    ply.write_bytes(header.encode() + rows.tobytes())
+
+    def place(v, n):  # move up by 10, double the size
+        return (v + [0, 0, 10]) * 2, n
+
+    assert splat.write_view(ply, tmp_path / "splat.bin", place) == 1
+    d = np.frombuffer((tmp_path / "splat.bin").read_bytes(), np.float32).reshape(-1, 16)
+    assert np.allclose(d[0, 0:3], [2, 0, 20]) and d[0, 3] > 0.9
+    assert np.allclose(d[0, 4:7], [0, 0.4, 0], atol=1e-6)  # x axis turned onto y, doubled
+    assert np.allclose(d[0, 8:11], [-0.2, 0, 0], atol=1e-6)
+    assert np.isclose(d[0, 7], 1.0) and np.isclose(d[0, 11], 0.5)

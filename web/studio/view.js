@@ -3,6 +3,7 @@
 import * as THREE from "./vendor/three.module.min.js";
 import { OrbitControls } from "./vendor/OrbitControls.js";
 import { GLTFLoader } from "./vendor/GLTFLoader.js";
+import { loadSplats } from "./splats.js";
 
 const cid = new URLSearchParams(location.search).get("c");
 const stage = document.getElementById("stage");
@@ -22,7 +23,7 @@ const key = new THREE.DirectionalLight(0xffffff, 1.6);
 const fill = new THREE.HemisphereLight(0xffffff, 0x444444, 0.6);
 scene.add(ambient, key, fill);
 
-let model = null;
+let model = null, splats = null;
 const shaded = [], flat = [];
 
 function setLight() {
@@ -36,6 +37,14 @@ function setLight() {
   fill.intensity = raking ? 0.05 : 0.6;
   if (model) model.traverse((o) => { if (o.isMesh) o.material = mode === "flat" ? flat[o.id] : shaded[o.id]; });
 }
+function setShow() {
+  const splat = document.getElementById("show").value === "splat" && splats;
+  if (model) model.visible = !splat;
+  if (splats) splats.mesh.visible = !!splat;
+  // the splat carries its own colours and light: the light controls are for the mesh
+  for (const id of ["light", "angle"]) document.getElementById(id).disabled = !!splat;
+}
+document.getElementById("show").addEventListener("change", setShow);
 document.getElementById("light").addEventListener("change", setLight);
 document.getElementById("angle").addEventListener("input", setLight);
 
@@ -74,6 +83,16 @@ async function load() {
   camera.near = size / 100; camera.far = size * 20; camera.updateProjectionMatrix();
   setLight();
   info.textContent = report ? summary(report) : "";
+  splats = await loadSplats(`/api/captures/${cid}/splat.bin`).catch(() => null);
+  if (splats) {
+    splats.mesh.visible = false;
+    scene.add(splats.mesh);
+    document.getElementById("show-label").hidden = false;
+    const dl = document.getElementById("download-splat");
+    dl.href = `/api/captures/${cid}/splat.ply`;
+    dl.hidden = false;
+    setShow();
+  }
 }
 
 function summary(r) {
@@ -94,5 +113,9 @@ function summary(r) {
   return parts.join(" · ");
 }
 
-renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+renderer.setAnimationLoop(() => {
+  controls.update();
+  if (splats && splats.mesh.visible) splats.sort(camera);
+  renderer.render(scene, camera);
+});
 load().catch((e) => { info.textContent = `Could not load the model: ${e.message || e}`; });

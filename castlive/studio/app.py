@@ -191,6 +191,17 @@ def create_app(cfg: config.Config | None = None) -> FastAPI:
         return FileResponse(run_file(cid, "model.glb"), media_type="model/gltf-binary",
                             filename=f"castlive-{cid[:8]}.glb")
 
+    @app.get("/api/captures/{cid}/splat.bin")
+    def splat_view(cid: str):
+        """The splat for the viewer (placed like model.glb; layout in recon/splat.write_view)."""
+        return FileResponse(run_file(cid, "splat.bin"), media_type="application/octet-stream")
+
+    @app.get("/api/captures/{cid}/splat.ply")
+    def splat_ply(cid: str):
+        """The trained splat as a standard 3DGS .ply (in the solved cameras' coordinates)."""
+        return FileResponse(run_file(cid, "splat/splat.ply"), media_type="application/octet-stream",
+                            filename=f"castlive-{cid[:8]}-splat.ply")
+
     @app.get("/api/captures/{cid}/log")
     def run_log(cid: str):
         """The pipeline's own log, then the end of COLMAP's output."""

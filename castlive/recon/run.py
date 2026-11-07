@@ -17,7 +17,7 @@ from pathlib import Path
 
 import numpy as np
 
-from castlive.recon import PipelineError, colmap, frames, glb, masks, mesh, quality, texture
+from castlive.recon import PipelineError, colmap, frames, glb, masks, mesh, quality, splat, texture
 
 STAGES = ["frames", "masks", "poses", "splat", "mesh"]
 # Two passes are joined only if enough 3D points were seen from both, spread round the object.
@@ -173,6 +173,11 @@ def process(video: Path, meta: dict, mode: str, run_dir: Path,
         except Exception as e:  # noqa: BLE001
             note(f"mesh: quality check failed ({e})")
         place = mesh.placement(m.vertices, centre, up)
+        try:  # the splat for studio's viewer, placed like the model
+            report["splat"]["viewer_discs"] = splat.write_view(
+                splat_dir / "splat.ply", run_dir / "splat.bin", place)
+        except Exception as e:  # noqa: BLE001
+            note(f"mesh: splat for the viewer failed ({e})")
         try:  # colour from the photos; point colours if that fails
             parts, report["texture"] = texture.make(dense_dir, m.vertices, m.faces,
                                                     run_dir / "texture", log)

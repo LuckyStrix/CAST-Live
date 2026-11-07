@@ -389,10 +389,8 @@ def cameras(views: list[View]):
              torch.tensor(v.K, dtype=torch.float32, device="cuda"), v.w, v.h) for v in views]
 
 
-def load_ply(path: Path):
-    """A splat written by save_ply, as training parameters."""
-    import torch
-
+def read_ply(path: Path) -> dict[str, np.ndarray]:
+    """A splat written by save_ply, as arrays (no GPU needed)."""
     raw = path.read_bytes()
     end = raw.index(b"end_header\n") + len(b"end_header\n")
     names = [ln.split()[-1] for ln in raw[:end].decode().splitlines() if ln.startswith("property")]
@@ -402,11 +400,50 @@ def load_ply(path: Path):
         return np.stack([data[n] for n in names if n.startswith(prefix)], 1)
 
     n = len(data)
-    rest = col("f_rest_").reshape(n, 3, -1).transpose(0, 2, 1)
-    t = {"means": np.stack([data["x"], data["y"], data["z"]], 1),
-         "scales": col("scale_"), "quats": col("rot_"), "opacities": data["opacity"].copy(),
-         "sh0": col("f_dc_")[:, None], "shN": rest}
-    return {k: torch.tensor(np.ascontiguousarray(v), device="cuda") for k, v in t.items()}
+    return {"means": np.stack([data["x"], data["y"], data["z"]], 1),
+            "scales": col("scale_"), "quats": col("rot_"), "opacities": data["opacity"].copy(),
+            "sh0": col("f_dc_")[:, None], "shN": col("f_rest_").reshape(n, 3, -1).transpose(0, 2, 1)}
+
+
+def load_ply(path: Path):
+    """A splat written by save_ply, as training parameters."""
+    import torch
+
+    return {k: torch.tensor(np.ascontiguousarray(v), device="cuda")
+            for k, v in read_ply(path).items()}
+
+
+VIEW_MIN_OPACITY = 0.05  # fainter discs are left out of the viewer's file
+
+
+def write_view(splat_ply: Path, out: Path, place) -> int:
+    """The splat for the studio viewer, moved like the GLB (`place`, from mesh.placement) so
+    the two line up: per disc 16 float32 = centre xyz, opacity | first axis xyz, red | second
+    axis xyz, green | blue, 0, 0, 0. The axes are the disc's two radii (1 sigma). Colour is
+    the base (view-independent) colour. Returns the number of discs."""
+    p = read_ply(splat_ply)
+    opacity = 1 / (1 + np.exp(-p["opacities"]))
+    keep = opacity > VIEW_MIN_OPACITY
+    q = p["quats"][keep] / np.linalg.norm(p["quats"][keep], axis=1, keepdims=True)
+    w, x, y, z = q.T
+    rot = np.stack([  # the columns are the disc's local axes
+        np.stack([1 - 2 * (y * y + z * z), 2 * (x * y + w * z), 2 * (x * z - w * y)], 1),
+        np.stack([2 * (x * y - w * z), 1 - 2 * (x * x + z * z), 2 * (y * z + w * x)], 1),
+    ], 1)  # [n, 2 axes, xyz]
+    scales = np.exp(p["scales"][keep, :2])
+    centre = p["means"][keep]
+    moved, _ = place(centre, np.zeros_like(centre))
+    axes = [place(centre + rot[:, k] * scales[:, k:k + 1], np.zeros_like(centre))[0] - moved
+            for k in range(2)]
+    rgb = (p["sh0"][keep, 0] * SH0 + 0.5).clip(0, 1)
+    n = len(centre)
+    data = np.zeros((n, 16), np.float32)
+    data[:, 0:3], data[:, 3] = moved, opacity[keep]
+    data[:, 4:7], data[:, 7] = axes[0], rgb[:, 0]
+    data[:, 8:11], data[:, 11] = axes[1], rgb[:, 1]
+    data[:, 12] = rgb[:, 2]
+    out.write_bytes(data.tobytes())
+    return n
 
 
 def fuse(cams, depth_maps, masks, lo, hi, cells=GRID, band_cells=BAND):

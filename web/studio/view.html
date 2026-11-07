@@ -22,6 +22,10 @@
   <span id="title"></span>
 </header>
 <div class="bar">
+  <label id="show-label" hidden>Show <select id="show">
+    <option value="mesh">Mesh</option>
+    <option value="splat">Splat (as trained)</option>
+  </select></label>
   <label>Light <select id="light">
     <option value="soft">Soft</option>
     <option value="raking">Raking (read inscriptions)</option>
@@ -29,6 +33,7 @@
   </select></label>
   <label>Light angle <input id="angle" type="range" min="0" max="360" value="45"></label>
   <a id="download" class="plain" download>Download GLB</a>
+  <a id="download-splat" class="plain" download hidden>Download splat (.ply)</a>
 </div>
 <div id="stage"><div id="info">Loading…</div></div>
 </body>

@@ -25,6 +25,9 @@ GRID = 448  # fusion cells along the longest side of the object's box
 SH0 = 0.28209479177387814  # spherical harmonics: colour = SH0 * coefficient + 0.5
 NORMAL_FROM = 0.2  # fraction of training after which surface normals must agree with depth
 DISTORT_FROM = 0.1
+MULTIVIEW_FROM = 0.3  # then: patches must match between neighbouring photos (PGSR's idea)
+MULTIVIEW_PIXELS = 4096  # patch centres checked per step
+NCC_WEIGHT, GEO_WEIGHT = 0.15, 0.03
 
 
 @dataclass
@@ -119,8 +122,90 @@ def render(params, view_t, sh_degree, background=None, distloss=False):
         distloss=distloss, backgrounds=background)
 
 
+def neighbours(views: list[View], k: int = 6) -> list[list[int]]:
+    """For each photo, up to k others looking the same way (3-45 degrees apart), closest first."""
+    f = np.array([v.w2c[2, :3] for v in views])  # viewing directions
+    out = []
+    for i in range(len(views)):
+        angle = np.degrees(np.arccos(np.clip(f @ f[i], -1, 1)))
+        ok = np.flatnonzero((angle > 3) & (angle < 45))
+        out.append(ok[np.argsort(angle[ok])][:k].tolist())
+    return out
+
+
+def grey(image):
+    import torch
+
+    return (torch.from_numpy(image).cuda().float() @ torch.tensor([0.299, 0.587, 0.114], device="cuda")) / 255
+
+
+def multiview(colours, normals, alphas, cam, cam_n, grey_r, grey_n, depth_n, mask, rng):
+    """Multi-view consistency of the rendered surface (as in PGSR): each sampled pixel's depth
+    and normal give a local plane; a 7x7 patch warped through it into a neighbouring photo
+    should look the same there (normalised cross-correlation), and the point should land where
+    the neighbour's own depth puts it (forward-backward reprojection, in pixels). Pixels that
+    fail that check (hidden in the neighbour) are left out of the patch term."""
+    import torch
+    import torch.nn.functional as F
+
+    viewmat, K, w, _ = cam
+    viewmat_n, K_n, w_n, h_n = cam_n
+    depth = colours[0, ..., 3]
+    ok = (alphas[0, ..., 0] > 0.5) & (depth > 0)
+    if mask is not None:
+        ok &= mask
+    ok[:4], ok[-4:], ok[:, :4], ok[:, -4:] = False, False, False, False
+    idx = ok.reshape(-1).nonzero()[:, 0]
+    if len(idx) < 100:
+        return None
+    idx = idx[torch.randint(len(idx), (MULTIVIEW_PIXELS,), device=idx.device, generator=rng)]
+    v, u = idx // w, idx % w
+    one = torch.ones_like(u, dtype=torch.float32)
+    pix = torch.stack([u + 0.5, v + 0.5, one], -1)
+    X = (pix @ torch.linalg.inv(K).T) * depth.reshape(-1)[idx, None]  # camera frame
+    n = F.normalize(normals[0].reshape(-1, 3)[idx] @ viewmat[:3, :3].T, dim=-1)
+    n = torch.where((n * X).sum(-1, keepdim=True) > 0, -n, n)  # facing the camera
+    d = (n * X).sum(-1)  # plane: n.X = d (d < 0)
+    T = viewmat_n @ torch.linalg.inv(viewmat)
+    R, t = T[:3, :3], T[:3, 3]
+
+    # forward-backward reprojection through the neighbour's depth
+    Xn = X @ R.T + t
+    qn = Xn @ K_n.T
+    qn = qn[:, :2] / qn[:, 2:].clamp_min(1e-6)
+    inside = (Xn[:, 2] > 0) & (qn[:, 0] > 0) & (qn[:, 0] < w_n) & (qn[:, 1] > 0) & (qn[:, 1] < h_n)
+    norm = torch.stack([qn[:, 0] / w_n * 2 - 1, qn[:, 1] / h_n * 2 - 1], -1)
+    dn = F.grid_sample(depth_n[None, None], norm[None, None], mode="nearest",
+                       align_corners=False)[0, 0, 0]
+    back = torch.cat([qn, one[:, None]], -1) @ torch.linalg.inv(K_n).T * dn[:, None]
+    back = (back - t) @ R  # into the reference camera
+    back = back @ K.T
+    back = back[:, :2] / back[:, 2:].clamp_min(1e-6)
+    err = (back - pix[:, :2]).norm(dim=-1)
+    seen = inside & (dn > 0) & (err < 1.0)
+    geo = err[inside & (dn > 0)].clamp(max=5).mean() if (inside & (dn > 0)).any() else None
+
+    # patches through the plane's homography
+    H = K_n @ (R[None] + t[None, :, None] * n[:, None, :] / d[:, None, None]) @ torch.linalg.inv(K)
+    r = torch.arange(-3, 4, device=u.device)
+    dy, dx = torch.meshgrid(r, r, indexing="ij")
+    pu, pv = u[:, None] + dx.reshape(-1), v[:, None] + dy.reshape(-1)  # [N, 49]
+    ref = grey_r[pv, pu]
+    pts = torch.stack([pu + 0.5, pv + 0.5, torch.ones_like(pu, dtype=torch.float32)], -1)
+    q = torch.einsum("nij,npj->npi", H, pts)
+    q = q[..., :2] / q[..., 2:].clamp_min(1e-6)
+    grid = torch.stack([q[..., 0] / w_n * 2 - 1, q[..., 1] / h_n * 2 - 1], -1)
+    nb = F.grid_sample(grey_n[None, None], grid[None], align_corners=False)[0, 0]
+    ref_c, nb_c = ref - ref.mean(1, keepdim=True), nb - nb.mean(1, keepdim=True)
+    var_r, var_n = (ref_c ** 2).sum(1), (nb_c ** 2).sum(1)
+    ncc = (ref_c * nb_c).sum(1) / (var_r * var_n + 1e-8).sqrt()
+    use = seen & (var_r > 49 * 1e-4)  # flat patches carry no evidence
+    photo = ((1 - ncc) / 2)[use].mean() if use.any() else None
+    return photo, geo
+
+
 def train(dense: Path, use_masks: bool, steps: int = STEPS, progress=lambda f: None,
-          normal_weight: float = 0.05, seed: int = 0):
+          normal_weight: float = 0.05, seed: int = 0, use_multiview: bool = True):
     """Train the splat. Returns (params, photos, cameras, report)."""
     import torch
     from gsplat.strategy import DefaultStrategy
@@ -168,6 +253,10 @@ def train(dense: Path, use_masks: bool, steps: int = STEPS, progress=lambda f: N
                 torch.tensor(v.K, dtype=torch.float32, device=dev), v.w, v.h)
 
     cams = [camera(i) for i in range(len(views))]
+    near = neighbours(views)
+    near = [[j for j in js if j not in held] for js in near]  # held-out photos stay unseen
+    trng = torch.Generator(device=dev).manual_seed(seed)
+    report_mv = {"photo": [], "geo": []}
     rng = np.random.default_rng(seed)
     order: list[int] = []
     start = time.time()
@@ -191,6 +280,21 @@ def train(dense: Path, use_masks: bool, steps: int = STEPS, progress=lambda f: N
             loss = loss + normal_weight * (1 - (normals[0] * nd).sum(-1)).mean()
         if step >= DISTORT_FROM * steps:
             loss = loss + 1e-2 * distort.mean()
+        if use_multiview and step >= MULTIVIEW_FROM * steps and near[i]:
+            j = near[i][rng.integers(len(near[i]))]
+            with torch.no_grad():
+                depth_n = render(params, cams[j], 0)[0][0, ..., 3]
+            mask = None if photos.masks[i] is None else torch.from_numpy(photos.masks[i]).to(dev)
+            mv = multiview(colours, normals, alphas, cams[i], cams[j], grey(photos.images[i]),
+                           grey(photos.images[j]), depth_n, mask, trng)
+            if mv is not None:
+                photo, geo = mv
+                if photo is not None:
+                    loss = loss + NCC_WEIGHT * photo
+                    report_mv["photo"].append(float(photo))
+                if geo is not None:
+                    loss = loss + GEO_WEIGHT * geo
+                    report_mv["geo"].append(float(geo))
         loss.backward()
         for o in opt.values():
             o.step()
@@ -202,6 +306,9 @@ def train(dense: Path, use_masks: bool, steps: int = STEPS, progress=lambda f: N
     report = {"views": len(views), "held_out": len(held), "gaussians": len(params["means"]),
               "steps": steps, "train_seconds": round(time.time() - start),
               "gpu_gb": round(torch.cuda.max_memory_allocated() / 2 ** 30, 1)}
+    for k, vals in report_mv.items():  # how well the last tenth of training agreed across views
+        if vals:
+            report[f"multiview_{k}"] = round(float(np.mean(vals[-max(1, len(vals) // 10):])), 4)
     with torch.no_grad():
         report["psnr_held_out"] = round(psnr(params, [cams[i] for i in held],
                                              [photos.images[i] for i in held],
@@ -365,6 +472,7 @@ def main():
     ap.add_argument("--progress", action="store_true", help="print 'progress <fraction>' lines")
     ap.add_argument("--check", action="store_true", help="measure the mesh (quality.py)")
     ap.add_argument("--normal-weight", type=float, default=0.05)
+    ap.add_argument("--no-multiview", action="store_true")
     a = ap.parse_args()
     views = read_views(a.dense / "sparse")
     c = centres_of(views)
@@ -375,7 +483,7 @@ def main():
     t = time.time()
     try:
         v, f, col, report = make(a.dense, a.out, not a.no_masks, centre, radius, a.steps, show,
-                                 normal_weight=a.normal_weight)
+                                 normal_weight=a.normal_weight, use_multiview=not a.no_multiview)
         m = M.from_arrays(v, f, col)
     except PipelineError as e:
         print(f"PipelineError: {e}", flush=True)

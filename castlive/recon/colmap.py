@@ -304,11 +304,13 @@ SETUPS = {
               "--SiftExtraction.max_num_features", "16384"],
              ["--FeatureMatching.type", "SIFT_BRUTEFORCE"]),
 }
-# Tried in order until one passes `accept`. On the turned-over box (Nov 2026) only SIFT +
-# global mapper got the turn-over right; ALIKED + incremental joined best but mirror-imaged.
-# Symmetric objects can fool any one setup, so several are tried and checked.
-CANDIDATES = [("aliked", "mapper"), ("sift", "global_mapper"), ("aliked", "global_mapper"),
-              ("sift", "mapper")]
+# Tried in order until one passes `accept`; symmetric objects can fool any one setup, so
+# several are tried and checked. SIFT + incremental mapper first: on both turned-over box scans
+# it joined the sides right in ~100 s (the global mapper took 13-24 min for the same cameras,
+# to within 0.05% of the orbit), and the in-the-ground mouse took 8 min instead of 41 for
+# ALIKED; lower reprojection error each time. CAST's box needed the fallbacks.
+CANDIDATES = [("sift", "mapper"), ("aliked", "mapper"), ("sift", "global_mapper"),
+              ("aliked", "global_mapper")]
 
 
 def features(images: Path, masks: Path | None, db: Path, setup: str, log: Path,

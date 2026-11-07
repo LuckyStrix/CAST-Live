@@ -329,13 +329,13 @@ def test_poses_tries_candidates_until_one_is_accepted(monkeypatch, tmp_path):
                                    accept=lambda m: m.overlap["tag"] == "second")
     assert model.overlap["tag"] == "second"
     assert [t["accepted"] for t in tried] == [False, True]
-    assert [t["setup"] for t in tried] == ["aliked", "sift"]
-    assert calls[0] == ("features", "aliked") and ("features", "sift") in calls
+    assert [t["setup"] for t in tried] == ["sift", "aliked"]
+    assert calls[0] == ("features", "sift") and ("features", "aliked") in calls
 
 
 def test_poses_skips_a_setup_whose_features_crash(monkeypatch, tmp_path):
     def features(images, masks, db, setup, log, progress=None):
-        if setup == "aliked":
+        if setup == "sift":
             raise colmap.Crashed("colmap feature_extractor failed (exit -6):\nCUDA failure 999")
         return {}
 
@@ -345,9 +345,9 @@ def test_poses_skips_a_setup_whose_features_crash(monkeypatch, tmp_path):
         out, ["p1_1.jpg"], np.zeros((1, 3)), np.zeros((1, 3)), np.zeros((1, 3)), 1, 0.1, {}))
     (tmp_path / "img").mkdir()
     model, _, tried = colmap.poses(tmp_path / "img", None, tmp_path / "w", tmp_path / "log")
-    assert model.folder.name == "sift_global_mapper"
-    assert tried[0]["setup"] == "aliked" and "exit -6" in tried[0]["error"]
-    assert [t["setup"] for t in tried] == ["aliked", "sift"]  # aliked's second mapper skipped
+    assert model.folder.name == "aliked_mapper"
+    assert tried[0]["setup"] == "sift" and "exit -6" in tried[0]["error"]
+    assert [t["setup"] for t in tried] == ["sift", "aliked"]
 
 
 def test_texture_scene_cam_files(tmp_path):

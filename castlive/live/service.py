@@ -23,7 +23,7 @@ POINTS = 4000  # preview points sent to the phone
 CAMERAS = 300  # recent camera positions sent
 WRITE_EVERY = 0.7  # seconds between updates
 EMPTY = b"\0\0\0\0"  # an overlay of 0 x 0 cells: nothing to paint
-REACH = 0.5  # object mode: paint only surface this close to the object (in orbit radii)
+REACH = 0.4  # object mode: paint only surface this close to the object (in orbit radii)
 
 
 def decode(path: Path) -> np.ndarray | None:

@@ -247,12 +247,7 @@ def train(dense: Path, use_masks: bool, steps: int = STEPS, progress=lambda f: N
     strategy.check_sanity(params, opt)
     sstate = strategy.initialize_state(scene_scale=scene)
 
-    def camera(i):
-        v = views[i]
-        return (torch.tensor(v.w2c, dtype=torch.float32, device=dev),
-                torch.tensor(v.K, dtype=torch.float32, device=dev), v.w, v.h)
-
-    cams = [camera(i) for i in range(len(views))]
+    cams = cameras(views)
     near = neighbours(views)
     near = [[j for j in js if j not in held] for js in near]  # held-out photos stay unseen
     trng = torch.Generator(device=dev).manual_seed(seed)
@@ -331,19 +326,48 @@ def psnr(params, cams, images, masks) -> float:
     return float(np.mean(out)) if out else 0.0
 
 
-def depths(params, cams, photos):
-    """Median depth per camera where the splat is solid (and on the object): 0 elsewhere."""
+def depths(params, cams, photos, kind: str = "median"):
+    """Depth per camera where the splat is solid (and on the object), 0 elsewhere: the median
+    (the first surface crossed) or the expected (opacity-weighted mean) depth."""
     import torch
 
     out = []
     with torch.no_grad():
         for cam, mask in zip(cams, photos.masks):
-            _, alphas, _, _, _, median, _ = render(params, cam, 0)
+            colours, alphas, _, _, _, median, _ = render(params, cam, 0)
             ok = alphas[0, ..., 0] > 0.5
             if mask is not None:
                 ok &= torch.from_numpy(mask).cuda()
-            out.append(torch.where(ok, median[0, ..., 0], 0))
+            d = median[0, ..., 0] if kind == "median" else colours[0, ..., 3]
+            out.append(torch.where(ok, d, 0))
     return out
+
+
+def cameras(views: list[View]):
+    import torch
+
+    return [(torch.tensor(v.w2c, dtype=torch.float32, device="cuda"),
+             torch.tensor(v.K, dtype=torch.float32, device="cuda"), v.w, v.h) for v in views]
+
+
+def load_ply(path: Path):
+    """A splat written by save_ply, as training parameters."""
+    import torch
+
+    raw = path.read_bytes()
+    end = raw.index(b"end_header\n") + len(b"end_header\n")
+    names = [ln.split()[-1] for ln in raw[:end].decode().splitlines() if ln.startswith("property")]
+    data = np.frombuffer(raw[end:], dtype=[(n, "<f4") for n in names])
+
+    def col(prefix):
+        return np.stack([data[n] for n in names if n.startswith(prefix)], 1)
+
+    n = len(data)
+    rest = col("f_rest_").reshape(n, 3, -1).transpose(0, 2, 1)
+    t = {"means": np.stack([data["x"], data["y"], data["z"]], 1),
+         "scales": col("scale_"), "quats": col("rot_"), "opacities": data["opacity"].copy(),
+         "sh0": col("f_dc_")[:, None], "shN": rest}
+    return {k: torch.tensor(np.ascontiguousarray(v), device="cuda") for k, v in t.items()}
 
 
 def fuse(cams, depth_maps, masks, lo, hi, cells=GRID):
@@ -437,18 +461,24 @@ def save_ply(params, path: Path) -> None:
 
 
 def make(dense: Path, out: Path, use_masks: bool, centre: np.ndarray, radius: float,
-         steps: int = STEPS, progress=lambda f: None, **options):
+         steps: int = STEPS, progress=lambda f: None, depth: str = "median", refuse: bool = False,
+         **options):
     """Train, save the splat (out/splat.ply) and fuse the surface. Returns (vertices, faces,
-    colours, report)."""
+    colours, report). `refuse`: skip training, fuse the splat already in `out`."""
     import torch
 
     out.mkdir(parents=True, exist_ok=True)
-    params, photos, cams, report = train(
-        dense, use_masks, steps, progress=lambda f: progress(0.9 * f), **options)
-    save_ply(params, out / "splat.ply")
+    if refuse:
+        views = read_views(dense / "sparse")
+        params, photos, cams, report = (load_ply(out / "splat.ply"), Photos(dense, views, use_masks),
+                                        cameras(views), {})
+    else:
+        params, photos, cams, report = train(
+            dense, use_masks, steps, progress=lambda f: progress(0.9 * f), **options)
+        save_ply(params, out / "splat.ply")
     t = time.time()
     lo, hi = bounds(params, centre, radius)
-    verts, faces = fuse(cams, depths(params, cams, photos), photos.masks, lo, hi)
+    verts, faces = fuse(cams, depths(params, cams, photos, depth), photos.masks, lo, hi)
     report["fuse_seconds"] = round(time.time() - t)
     colours = colours_at(params, verts)
     torch.cuda.empty_cache()
@@ -473,6 +503,9 @@ def main():
     ap.add_argument("--check", action="store_true", help="measure the mesh (quality.py)")
     ap.add_argument("--normal-weight", type=float, default=0.05)
     ap.add_argument("--no-multiview", action="store_true")
+    ap.add_argument("--depth", choices=["median", "expected"], default="median")
+    ap.add_argument("--refuse", action="store_true", help="fuse the splat already in <out> again")
+    ap.add_argument("--mesh-name", default="mesh.ply")
     a = ap.parse_args()
     views = read_views(a.dense / "sparse")
     c = centres_of(views)
@@ -483,19 +516,20 @@ def main():
     t = time.time()
     try:
         v, f, col, report = make(a.dense, a.out, not a.no_masks, centre, radius, a.steps, show,
-                                 normal_weight=a.normal_weight, use_multiview=not a.no_multiview)
+                                 depth=a.depth, refuse=a.refuse, normal_weight=a.normal_weight,
+                                 use_multiview=not a.no_multiview)
         m = M.from_arrays(v, f, col)
     except PipelineError as e:
         print(f"PipelineError: {e}", flush=True)
         sys.exit(2)
-    M.save_ply(m, a.out / "mesh.ply")
+    M.save_ply(m, a.out / a.mesh_name)
     report["mesh"] = m.stats
     if a.check:
         from castlive.recon import quality
 
         report["quality"] = quality.measure(a.dense, m.vertices, m.faces, not a.no_masks)
     report["total_seconds"] = round(time.time() - t)
-    (a.out / "report.json").write_text(json.dumps(report, indent=1))
+    (a.out / (Path(a.mesh_name).stem + ".json")).write_text(json.dumps(report, indent=1))
     print(json.dumps(report), flush=True)
 
 

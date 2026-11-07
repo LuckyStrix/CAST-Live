@@ -19,7 +19,7 @@ import numpy as np
 from castlive.recon import PipelineError
 from castlive.recon.colmap import iter_images, quat_to_rot
 
-STEPS = 15_000  # training steps (one photo each)
+STEPS = 7_000  # training steps (one photo each): more gave no better surface on the box
 HOLD_OUT = 12  # every n-th photo is kept out of training, to check the splat on unseen views
 GRID = 448  # fusion cells along the longest side of the object's box
 SH0 = 0.28209479177387814  # spherical harmonics: colour = SH0 * coefficient + 0.5

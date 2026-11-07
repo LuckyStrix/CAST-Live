@@ -84,6 +84,10 @@ function summary(r) {
     if (r.poses.overlap && "joined" in r.poses) parts.push(`${r.poses.overlap.shared || 0} points seen from both sides: ${r.poses.joined ? "joined" : "NOT joined"}`);
   }
   if (r.mesh) parts.push(`${r.mesh.triangles.toLocaleString()} triangles${r.mesh.open ? ", open where unseen" : ""}`);
+  const q = r.quality || {};
+  if ("outline_missed" in q) parts.push(`outline covered ${(100 * (1 - q.outline_missed)).toFixed(1)}% (worst view ${(100 * (1 - q.outline_missed_worst)).toFixed(0)}%)`);
+  if ("point_distance_median" in q) parts.push(`surface within ${(100 * q.point_distance_median).toFixed(2)}% of size of the solved points (median; 90%: ${(100 * q.point_distance_p90).toFixed(1)}%)`);
+  if (r.splat && r.splat.psnr_held_out) parts.push(`splat ${r.splat.psnr_held_out} dB on ${r.splat.held_out} unseen photos`);
   if (r.mesh && !r.mesh.scale_known) parts.push("size not known (no marker card)");
   const secs = Object.values(r.seconds || {}).reduce((a, b) => a + b, 0);
   if (secs) parts.push(`${Math.round(secs / 60)} min`);

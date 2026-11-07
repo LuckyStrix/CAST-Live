@@ -22,6 +22,8 @@ from castlive.recon.colmap import iter_images, quat_to_rot
 STEPS = 7_000  # training steps (one photo each): more gave no better surface on the box
 HOLD_OUT = 12  # every n-th photo is kept out of training, to check the splat on unseen views
 GRID = 448  # fusion cells along the longest side of the object's box
+BAND = 4  # fusion: distances are averaged within this many cells of each surface
+DEPTH_MIX = 0.0  # fused depth: 0 median (first surface crossed), 1 expected (weighted mean)
 SH0 = 0.28209479177387814  # spherical harmonics: colour = SH0 * coefficient + 0.5
 NORMAL_FROM = 0.2  # fraction of training after which surface normals must agree with depth
 DISTORT_FROM = 0.1
@@ -359,9 +361,9 @@ def psnr(params, cams, images, masks) -> float:
     return float(np.mean(out)) if out else 0.0
 
 
-def depths(params, cams, photos, kind: str = "median"):
+def depths(params, cams, photos, mix: float = DEPTH_MIX):
     """Depth per camera where the splat is solid (and on the object), 0 elsewhere: the median
-    (the first surface crossed) or the expected (opacity-weighted mean) depth."""
+    (the first surface crossed; mix 0), the expected (opacity-weighted mean; mix 1) or between."""
     import torch
 
     out = []
@@ -371,7 +373,7 @@ def depths(params, cams, photos, kind: str = "median"):
             ok = alphas[0, ..., 0] > 0.5
             if mask is not None:
                 ok &= torch.from_numpy(mask).cuda()
-            d = median[0, ..., 0] if kind == "median" else colours[0, ..., 3]
+            d = (1 - mix) * median[0, ..., 0] + mix * colours[0, ..., 3]
             out.append(torch.where(ok, d, 0))
     return out
 
@@ -403,7 +405,7 @@ def load_ply(path: Path):
     return {k: torch.tensor(np.ascontiguousarray(v), device="cuda") for k, v in t.items()}
 
 
-def fuse(cams, depth_maps, masks, lo, hi, cells=GRID):
+def fuse(cams, depth_maps, masks, lo, hi, cells=GRID, band_cells=BAND):
     """Average signed distances from every depth map on a grid over [lo, hi] (GPU), then
     marching cubes. Off-object pixels (masks) count as empty space. Returns vertices, faces."""
     import torch
@@ -415,7 +417,7 @@ def fuse(cams, depth_maps, masks, lo, hi, cells=GRID):
     grid = torch.stack(torch.meshgrid(*axes, indexing="ij"), -1).reshape(-1, 3)
     tsdf = torch.zeros(len(grid), device=lo.device)
     weight = torch.zeros(len(grid), device=lo.device)
-    band = 4 * cell
+    band = band_cells * cell
     for (viewmat, K, w, h), depth, mask in zip(cams, depth_maps, masks):
         pc = grid @ viewmat[:3, :3].T + viewmat[:3, 3]
         z = pc[:, 2]
@@ -506,7 +508,8 @@ def save_ply(params, path: Path) -> None:
 
 
 def make(dense: Path, out: Path, use_masks: bool, centre: np.ndarray, radius: float,
-         steps: int = STEPS, progress=lambda f: None, depth: str = "median", refuse: bool = False,
+         steps: int = STEPS, progress=lambda f: None, mix: float = DEPTH_MIX, band: float = BAND,
+         refuse: bool = False,
          **options):
     """Train, save the splat (out/splat.ply) and fuse the surface. Returns (vertices, faces,
     colours, report). `refuse`: skip training, fuse the splat already in `out`."""
@@ -523,7 +526,8 @@ def make(dense: Path, out: Path, use_masks: bool, centre: np.ndarray, radius: fl
         save_ply(params, out / "splat.ply")
     t = time.time()
     lo, hi = bounds(params, centre, radius)
-    verts, faces = fuse(cams, depths(params, cams, photos, depth), photos.masks, lo, hi)
+    verts, faces = fuse(cams, depths(params, cams, photos, mix), photos.masks, lo, hi,
+                        band_cells=band)
     report["fuse_seconds"] = round(time.time() - t)
     colours = colours_at(params, verts)
     torch.cuda.empty_cache()
@@ -551,7 +555,8 @@ def main():
     ap.add_argument("--ncc-weight", type=float, default=NCC_WEIGHT)
     ap.add_argument("--patch-step", type=int, default=PATCH_STEP)
     ap.add_argument("--flat-std", type=float, default=FLAT_STD)
-    ap.add_argument("--depth", choices=["median", "expected"], default="median")
+    ap.add_argument("--depth-mix", type=float, default=DEPTH_MIX)
+    ap.add_argument("--band", type=float, default=BAND, help="fusion band, in grid cells")
     ap.add_argument("--refuse", action="store_true", help="fuse the splat already in <out> again")
     ap.add_argument("--mesh-name", default="mesh.ply")
     a = ap.parse_args()
@@ -564,7 +569,7 @@ def main():
     t = time.time()
     try:
         v, f, col, report = make(a.dense, a.out, not a.no_masks, centre, radius, a.steps, show,
-                                 depth=a.depth, refuse=a.refuse, normal_weight=a.normal_weight,
+                                 mix=a.depth_mix, band=a.band, refuse=a.refuse, normal_weight=a.normal_weight,
                                  use_multiview=not a.no_multiview,
                                  ncc_weight=a.ncc_weight, patch_step=a.patch_step,
                                  flat_std=a.flat_std)

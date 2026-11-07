@@ -28,6 +28,8 @@ DISTORT_FROM = 0.1
 MULTIVIEW_FROM = 0.3  # then: patches must match between neighbouring photos (PGSR's idea)
 MULTIVIEW_PIXELS = 4096  # patch centres checked per step
 NCC_WEIGHT, GEO_WEIGHT = 0.15, 0.03
+PATCH_STEP = 1  # pixels between patch samples (7x7 samples)
+FLAT_STD = 0.01  # patches with less grey contrast than this carry no evidence
 MIN_TRACK, MAX_ERROR_PX = 3, 1.5  # COLMAP points trusted as measurements
 POINT_HOLD_OUT = 5
 ANCHOR_CLAMP = 0.05  # depth error (fraction) above which a point stops pulling: outliers
@@ -184,7 +186,8 @@ def grey(image):
     return (torch.from_numpy(image).cuda().float() @ torch.tensor([0.299, 0.587, 0.114], device="cuda")) / 255
 
 
-def multiview(colours, normals, alphas, cam, cam_n, grey_r, grey_n, depth_n, mask, rng):
+def multiview(colours, normals, alphas, cam, cam_n, grey_r, grey_n, depth_n, mask, rng,
+              step=PATCH_STEP, flat_std=FLAT_STD):
     """Multi-view consistency of the rendered surface (as in PGSR): each sampled pixel's depth
     and normal give a local plane; a 7x7 patch warped through it into a neighbouring photo
     should look the same there (normalised cross-correlation), and the point should land where
@@ -199,7 +202,8 @@ def multiview(colours, normals, alphas, cam, cam_n, grey_r, grey_n, depth_n, mas
     ok = (alphas[0, ..., 0] > 0.5) & (depth > 0)
     if mask is not None:
         ok &= mask
-    ok[:4], ok[-4:], ok[:, :4], ok[:, -4:] = False, False, False, False
+    b = 3 * step + 1
+    ok[:b], ok[-b:], ok[:, :b], ok[:, -b:] = False, False, False, False
     idx = ok.reshape(-1).nonzero()[:, 0]
     if len(idx) < 100:
         return None
@@ -232,7 +236,10 @@ def multiview(colours, normals, alphas, cam, cam_n, grey_r, grey_n, depth_n, mas
 
     # patches through the plane's homography
     H = K_n @ (R[None] + t[None, :, None] * n[:, None, :] / d[:, None, None]) @ torch.linalg.inv(K)
-    r = torch.arange(-3, 4, device=u.device)
+    if step > 1:  # spaced samples: average the pixels between them (no aliasing of noise)
+        grey_r = F.avg_pool2d(grey_r[None, None], step, 1, step // 2)[0, 0, :grey_r.shape[0], :grey_r.shape[1]]
+        grey_n = F.avg_pool2d(grey_n[None, None], step, 1, step // 2)[0, 0, :grey_n.shape[0], :grey_n.shape[1]]
+    r = torch.arange(-3, 4, device=u.device) * step
     dy, dx = torch.meshgrid(r, r, indexing="ij")
     pu, pv = u[:, None] + dx.reshape(-1), v[:, None] + dy.reshape(-1)  # [N, 49]
     ref = grey_r[pv, pu]
@@ -244,7 +251,7 @@ def multiview(colours, normals, alphas, cam, cam_n, grey_r, grey_n, depth_n, mas
     ref_c, nb_c = ref - ref.mean(1, keepdim=True), nb - nb.mean(1, keepdim=True)
     var_r, var_n = (ref_c ** 2).sum(1), (nb_c ** 2).sum(1)
     ncc = (ref_c * nb_c).sum(1) / (var_r * var_n + 1e-8).sqrt()
-    use = seen & (var_r > 49 * 1e-4)  # flat patches carry no evidence
+    use = seen & (var_r > 49 * flat_std ** 2)  # flat patches carry no evidence
     photo = ((1 - ncc) / 2)[use].mean() if use.any() else None
     return photo, geo
 
@@ -293,7 +300,8 @@ def plain_smoothness(normals, alphas, grey_img, mask):
 
 def train(dense: Path, use_masks: bool, steps: int = STEPS, progress=lambda f: None,
           normal_weight: float = 0.05, seed: int = 0, use_multiview: bool = True,
-          anchor_weight: float = 0.0, smooth_weight: float = 0.0):
+          anchor_weight: float = 0.0, smooth_weight: float = 0.0, ncc_weight: float = NCC_WEIGHT,
+          patch_step: int = PATCH_STEP, flat_std: float = FLAT_STD):
     """Train the splat. Returns (params, photos, cameras, report)."""
     import torch
     from gsplat.strategy import DefaultStrategy
@@ -384,11 +392,11 @@ def train(dense: Path, use_masks: bool, steps: int = STEPS, progress=lambda f: N
                 depth_n = render(params, cams[j], 0)[0][0, ..., 3]
             mask = None if photos.masks[i] is None else torch.from_numpy(photos.masks[i]).to(dev)
             mv = multiview(colours, normals, alphas, cams[i], cams[j], grey(photos.images[i]),
-                           grey(photos.images[j]), depth_n, mask, trng)
+                           grey(photos.images[j]), depth_n, mask, trng, patch_step, flat_std)
             if mv is not None:
                 photo, geo = mv
                 if photo is not None:
-                    loss = loss + NCC_WEIGHT * photo
+                    loss = loss + ncc_weight * photo
                     report_mv["photo"].append(float(photo))
                 if geo is not None:
                     loss = loss + GEO_WEIGHT * geo
@@ -620,6 +628,9 @@ def main():
     ap.add_argument("--no-multiview", action="store_true")
     ap.add_argument("--anchor-weight", type=float, default=0.0)
     ap.add_argument("--smooth-weight", type=float, default=0.0)
+    ap.add_argument("--ncc-weight", type=float, default=NCC_WEIGHT)
+    ap.add_argument("--patch-step", type=int, default=PATCH_STEP)
+    ap.add_argument("--flat-std", type=float, default=FLAT_STD)
     ap.add_argument("--depth", choices=["median", "expected"], default="median")
     ap.add_argument("--refuse", action="store_true", help="fuse the splat already in <out> again")
     ap.add_argument("--mesh-name", default="mesh.ply")
@@ -635,7 +646,9 @@ def main():
         v, f, col, report = make(a.dense, a.out, not a.no_masks, centre, radius, a.steps, show,
                                  depth=a.depth, refuse=a.refuse, normal_weight=a.normal_weight,
                                  use_multiview=not a.no_multiview,
-                                 anchor_weight=a.anchor_weight, smooth_weight=a.smooth_weight)
+                                 anchor_weight=a.anchor_weight, smooth_weight=a.smooth_weight,
+                                 ncc_weight=a.ncc_weight, patch_step=a.patch_step,
+                                 flat_std=a.flat_std)
         m = M.from_arrays(v, f, col)
     except PipelineError as e:
         print(f"PipelineError: {e}", flush=True)

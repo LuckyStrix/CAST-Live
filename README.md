@@ -42,7 +42,9 @@ Needs a machine with Docker, an NVIDIA GPU and a Tailscale account.
    Chrome on Android; nothing to install).
 
 It can run next to CAST on the same machine: separate machine name, containers and data volume.
-To update: `git pull`, then `docker compose up -d --build` (Windows: `powershell -File docker\update.ps1`).
+To update: `git pull`, then `docker compose restart` from `docker/`: the code is mounted into the
+containers, so only a change to the Dockerfiles or dependencies needs `docker compose up -d --build`
+(Windows: `powershell -File docker\update.ps1`, with `-Build` for those).
 
 ## Develop
 

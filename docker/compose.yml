@@ -7,6 +7,10 @@
 #                                                      live (GPU; no network; files only)
 #
 # capture and studio are on separate networks, so the public app can never reach studio.
+#
+# The code (castlive/, web/) is mounted read-only from this checkout, so a code update is a
+# restart (update.ps1), not a rebuild: images are rebuilt only when dependencies change
+# (update.ps1 -Build).
 
 name: castlive
 
@@ -31,7 +35,8 @@ services:
     command: castlive-capture
     environment:
       CASTLIVE_CAPTURE_HOST: 0.0.0.0
-    volumes: [castlive-data:/data]
+      PYTHONPATH: /app
+    volumes: [castlive-data:/data, ../castlive:/app/castlive:ro, ../web:/app/web:ro]
     networks: [capture_net]
     restart: unless-stopped
 
@@ -40,14 +45,16 @@ services:
     command: castlive-studio
     environment:
       CASTLIVE_STUDIO_HOST: 0.0.0.0
-    volumes: [castlive-data:/data]
+      PYTHONPATH: /app
+    volumes: [castlive-data:/data, ../castlive:/app/castlive:ro, ../web:/app/web:ro]
     networks: [studio_net]
     restart: unless-stopped
 
   worker:  # checks uploads; runs anywhere
     image: castlive:local
     command: castlive-worker
-    volumes: [castlive-data:/data]
+    environment: { PYTHONPATH: /app }
+    volumes: [castlive-data:/data, ../castlive:/app/castlive:ro, ../web:/app/web:ro]
     network_mode: none
     restart: unless-stopped
 
@@ -55,7 +62,8 @@ services:
     build: { context: .., dockerfile: docker/Dockerfile.worker }
     image: castlive-worker:local
     command: castlive-worker --reconstruct
-    volumes: [castlive-data:/data]
+    environment: { PYTHONPATH: /app }
+    volumes: [castlive-data:/data, ../castlive:/app/castlive:ro, ../web:/app/web:ro]
     network_mode: none
     shm_size: 2gb
     deploy:
@@ -68,7 +76,8 @@ services:
     build: { context: .., dockerfile: docker/Dockerfile.live }
     image: castlive-live:local
     command: castlive-live
-    volumes: [castlive-data:/data]
+    environment: { PYTHONPATH: /app }
+    volumes: [castlive-data:/data, ../castlive:/app/castlive:ro, ../web:/app/web:ro]
     network_mode: none
     shm_size: 2gb
     deploy:

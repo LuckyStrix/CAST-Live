@@ -165,6 +165,18 @@ def neighbours(views: list[View], k: int = 6) -> list[list[int]]:
     return out
 
 
+def knn_spacing(pts, k: int = 3, chunk: int = 4096):
+    """Mean distance from each point to its k nearest others, in chunks: a full
+    N x N distance table needs 4 N^2 bytes (87 GB at 150k points)."""
+    import torch
+
+    out = torch.empty(len(pts), device=pts.device)
+    for i in range(0, len(pts), chunk):
+        d = torch.cdist(pts[i:i + chunk], pts)
+        out[i:i + chunk] = d.topk(k + 1, largest=False).values[:, 1:].mean(1)
+    return out
+
+
 def grey(image):
     import torch
 
@@ -266,7 +278,7 @@ def train(dense: Path, use_masks: bool, steps: int = STEPS, progress=lambda f: N
     trained = [i for i in range(len(views)) if i not in held]
 
     pts = torch.tensor(xyz, dtype=torch.float32, device=dev)
-    nn = torch.cdist(pts, pts).topk(4, largest=False).values[:, 1:].mean(1).clamp_min(1e-7)
+    nn = knn_spacing(pts).clamp_min(1e-7)
     n = len(pts)
     params = torch.nn.ParameterDict({
         "means": pts,

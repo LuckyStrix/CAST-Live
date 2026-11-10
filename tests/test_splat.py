@@ -88,6 +88,21 @@ def test_run_splat_passes_on_errors_the_user_can_act_on(tmp_path, monkeypatch):
         run.run_splat(tmp_path, tmp_path / "s", False, [0, 0, 0], 1.0, tmp_path / "log")
 
 
+def test_viewer_in_the_ground_shows_the_object_and_the_ground_round_it():
+    ground = {"normal": [0, 0, 1.0], "foot": [0, 0, 0], "reach": 1.0, "top": 2.0}
+    pts = np.array([
+        [0, 0, 1.0],     # the object
+        [0.5, 0, 2.1],   # its top (just under 1.1 x top)
+        [0, 0, 2.5],     # above it: a floater
+        [1.5, 0, 1.0],   # beside it, off the ground: a chair or a wall
+        [2.0, 0, 0.05],  # the ground round it
+        [3.0, 0, 0.0],   # ground too far away
+        [0, 0, -0.5],    # well below the ground
+    ])
+    assert splat.on_ground_patch(pts, ground).tolist() == [True, True, False, False, True,
+                                                           False, False]
+
+
 def test_faces_point_outward():
     v = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], float)
     out = np.array([[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]])  # a tetrahedron, outward

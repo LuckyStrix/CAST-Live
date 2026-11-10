@@ -443,16 +443,33 @@ def load_ply(path: Path):
 
 
 VIEW_MIN_OPACITY = 0.05  # fainter discs are left out of the viewer's file
+VIEW_NEAR_CELLS = 4  # in the ground: discs further than this from the mesh are left out too
+VIEW_GROUND_REACH = 2.5  # in the ground the viewer shows this many object reaches of ground
+VIEW_GROUND_BAND = 0.1  # and, away from the object, discs this near the ground (x its height)
 
 
-def write_view(splat_ply: Path, out: Path, place) -> int:
+def write_view(splat_ply: Path, out: Path, place, surface: np.ndarray | None = None,
+               ground: dict | None = None) -> int:
     """The splat for the studio viewer, moved like the GLB (`place`, from mesh.placement) so
     the two line up: per disc 16 float32 = centre xyz, opacity | first axis xyz, red | second
     axis xyz, green | blue, 0, 0, 0. The axes are the disc's two radii (1 sigma). Colour is
-    the base (view-independent) colour. Returns the number of discs."""
+    the base (view-independent) colour. With `surface` (the mesh's vertices), only discs
+    within VIEW_NEAR_CELLS fusion cells of it: in the ground the splat holds the whole room,
+    whose blurred walls and chairs hang in front of the object from most viewpoints. With
+    `ground` (splat report), only the object and the ground round it (`on_ground_patch`).
+    Returns the number of discs."""
     p = read_ply(splat_ply)
     opacity = 1 / (1 + np.exp(-p["opacities"]))
     keep = opacity > VIEW_MIN_OPACITY
+    if ground and "top" in ground:
+        keep &= on_ground_patch(p["means"], ground)
+    if surface is not None and len(surface):
+        from scipy.spatial import cKDTree
+
+        near = VIEW_NEAR_CELLS * float(np.ptp(surface, axis=0).max()) / GRID
+        idx = np.flatnonzero(keep)
+        dist, _ = cKDTree(surface).query(p["means"][idx], distance_upper_bound=near)
+        keep[idx[~np.isfinite(dist)]] = False
     q = p["quats"][keep] / np.linalg.norm(p["quats"][keep], axis=1, keepdims=True)
     w, x, y, z = q.T
     rot = np.stack([  # the columns are the disc's local axes
@@ -487,17 +504,7 @@ def ground_and_object(params, cams, masks, centre: np.ndarray, radius: float) ->
     c = torch.tensor(centre, dtype=torch.float32, device="cuda")
     pts = params["means"].detach()
     pts = pts[(torch.sigmoid(params["opacities"].detach()) > 0.5) & ((pts - c).norm(dim=1) < radius)]
-    shown = torch.zeros(len(pts), device="cuda")
-    inside = torch.zeros(len(pts), device="cuda")
-    for (viewmat, K, w, h), mask in zip(cams, masks):
-        pc = pts @ viewmat[:3, :3].T + viewmat[:3, 3]
-        z = pc[:, 2].clamp_min(1e-9)
-        u = (K[0, 0] * pc[:, 0] / z + K[0, 2]).floor().long()
-        v = (K[1, 1] * pc[:, 1] / z + K[1, 2]).floor().long()
-        vis = (pc[:, 2] > 0) & (u >= 0) & (u < w) & (v >= 0) & (v < h)
-        m = torch.from_numpy(mask).cuda().reshape(-1)[v.clamp(0, h - 1) * w + u.clamp(0, w - 1)]
-        shown += vis.float()
-        inside += (vis & m).float()
+    shown, inside = outline_counts(pts, cams, masks)
     obj = ((shown >= 10) & (inside >= OBJECT_SHARE * shown)).cpu().numpy()
     pts = pts.cpu().numpy().astype(np.float64)
     if obj.sum() < 100 or (~obj).sum() < 100:
@@ -518,7 +525,55 @@ def ground_and_object(params, cams, masks, centre: np.ndarray, radius: float) ->
     foot = np.median(flat, axis=0)
     reach = float(np.quantile(np.linalg.norm(flat - foot, axis=1), 0.99)) * CARVE_REACH
     return {"normal": n.tolist(), "offset": float(d), "foot": foot.tolist(), "reach": reach,
+            "top": float(np.quantile(height, 0.99)),
             "object_gaussians": int(obj.sum()), "ground_share": round(share, 3)}
+
+
+def on_ground_patch(points: np.ndarray, ground: dict) -> np.ndarray:
+    """In the ground, what the viewer shows: the object (up to just above its top, within its
+    reach) and the ground round it (within VIEW_GROUND_REACH reaches, near the ground plane).
+    Walls, chairs and the blurred far edges of the ground are left out."""
+    n, foot = np.asarray(ground["normal"]), np.asarray(ground["foot"])
+    rel = points - foot
+    h = rel @ n
+    r = np.linalg.norm(rel - np.outer(h, n), axis=1)
+    top, reach = ground["top"], ground["reach"]
+    near_ground = np.abs(h) < VIEW_GROUND_BAND * top
+    return (r < VIEW_GROUND_REACH * reach) & (h < 1.1 * top) & ((r < reach) | near_ground) \
+        & (h > -VIEW_GROUND_BAND * top)
+
+
+def outline_counts(pts, cams, masks):
+    """For each point (GPU): in how many photos it is in the picture, and in how many of
+    those inside the object's outline."""
+    import torch
+
+    shown = torch.zeros(len(pts), device="cuda")
+    inside = torch.zeros(len(pts), device="cuda")
+    for (viewmat, K, w, h), mask in zip(cams, masks):
+        pc = pts @ viewmat[:3, :3].T + viewmat[:3, 3]
+        z = pc[:, 2].clamp_min(1e-9)
+        u = (K[0, 0] * pc[:, 0] / z + K[0, 2]).floor().long()
+        v = (K[1, 1] * pc[:, 1] / z + K[1, 2]).floor().long()
+        vis = (pc[:, 2] > 0) & (u >= 0) & (u < w) & (v >= 0) & (v < h)
+        m = torch.from_numpy(mask).cuda().reshape(-1)[v.clamp(0, h - 1) * w + u.clamp(0, w - 1)]
+        shown += vis.float()
+        inside += (vis & m).float()
+    return shown, inside
+
+
+def prune_outside(params, cams, masks, region, band: float):
+    """The splat without the discs the object's outline rules out (as `fuse` empties that
+    space): in `region` and outside the outline in HULL_VIEWS or more photos. Otherwise the
+    viewer still shows the swellings the mesh no longer has. Returns (params, number dropped)."""
+    import torch
+
+    with torch.no_grad():
+        pts = params["means"].detach()
+        shown, inside = outline_counts(pts, cams, masks)
+        drop = region(pts, band) & (shown - inside >= HULL_VIEWS)
+        keep = ~drop
+        return {k: v.detach()[keep] for k, v in params.items()}, int(drop.sum())
 
 
 def centres_from(cams) -> np.ndarray:
@@ -681,7 +736,6 @@ def make(dense: Path, out: Path, use_masks: bool, centre: np.ndarray, radius: fl
     else:
         params, photos, cams, report = train(
             dense, use_masks, steps, progress=lambda f: progress(0.9 * f), **options)
-        save_ply(params, out / "splat.ply")
     t = time.time()
     lo, hi = bounds(params, centre, radius)
     fuse_masks, region = photos.masks, None
@@ -691,9 +745,14 @@ def make(dense: Path, out: Path, use_masks: bool, centre: np.ndarray, radius: fl
         if ground:
             report["ground"] = ground
             region = carve_region(ground)
+            params, report["pruned"] = prune_outside(
+                params, cams, fuse_masks, region, band * float((hi - lo).max()) / GRID)
         else:  # no clear ground or object: carving could cut either
             report["ground"] = None
             fuse_masks = photos.masks
+    if not refuse or report.get("pruned"):
+        save_ply(params, out / "splat.ply")
+        report["gaussians"] = len(params["means"])
     depth_maps = depths(params, cams, photos, mix)
     verts, faces = fuse(cams, depth_maps, fuse_masks, lo, hi, band_cells=band, region=region)
     report["fuse_seconds"] = round(time.time() - t)

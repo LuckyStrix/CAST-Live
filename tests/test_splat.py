@@ -140,6 +140,27 @@ def test_viewer_file_has_placed_discs(tmp_path):
     assert np.isclose(d[0, 7], 1.0) and np.isclose(d[0, 11], 0.5)
 
 
+def test_viewer_lays_discs_flat_on_the_surface(tmp_path):
+    names = (["x", "y", "z", "nx", "ny", "nz", "f_dc_0", "f_dc_1", "f_dc_2"]
+             + [f"f_rest_{i}" for i in range(45)] + ["opacity", "scale_0", "scale_1", "scale_2"]
+             + [f"rot_{i}" for i in range(4)])
+    rows = np.zeros((1, len(names)), np.float32)
+    col = {n: i for i, n in enumerate(names)}
+    rows[0, col["opacity"]] = 3
+    rows[0, col["scale_0"]], rows[0, col["scale_1"]] = np.log(0.3), np.log(0.1)
+    rows[0, col["rot_0"]] = rows[0, col["rot_1"]] = np.sqrt(0.5)  # 90 degrees about x:
+    header = ("ply\nformat binary_little_endian 1.0\nelement vertex 1\n"  # second axis is z
+              + "".join(f"property float {n}\n" for n in names) + "end_header\n")
+    ply = tmp_path / "splat.ply"
+    ply.write_bytes(header.encode() + rows.tobytes())
+    floor = np.array([[x, y, 0.0] for x in np.linspace(-1, 1, 21) for y in np.linspace(-1, 1, 21)])
+    up = np.tile([0, 0, 2.0], (len(floor), 1))  # any length
+    assert splat.write_view(ply, tmp_path / "splat.bin", lambda v, n: (v, n), floor, None, up) == 1
+    d = np.frombuffer((tmp_path / "splat.bin").read_bytes(), np.float32)
+    assert np.allclose(d[4:7], [0.3, 0, 0], atol=1e-6)  # along the floor: kept
+    assert np.allclose(d[8:11], 0, atol=1e-6)  # standing out of it: gone
+
+
 def test_exposure_gains_even_out_the_photos(tmp_path):
     pytest.importorskip("open3d")
     from PIL import Image

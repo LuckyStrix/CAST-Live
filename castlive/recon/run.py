@@ -189,8 +189,8 @@ def process(video: Path, meta: dict, mode: str, run_dir: Path,
         try:  # the splat for studio's viewer, placed like the model
             report["splat"]["viewer_discs"] = splat.write_view(
                 splat_dir / "splat.ply", run_dir / "splat.bin", place,
-                None if use_masks else m.vertices,  # in the ground: what lies on the model
-                report["splat"].get("ground"))
+                None if use_masks else m.vertices,  # in the ground: what lies on the model,
+                report["splat"].get("ground"), None if use_masks else m.normals)  # laid flat on it
         except Exception as e:  # noqa: BLE001
             note(f"mesh: splat for the viewer failed ({e})")
         try:  # colour from the photos; point colours if that fails

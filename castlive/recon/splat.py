@@ -449,38 +449,47 @@ VIEW_GROUND_BAND = 0.1  # and, away from the object, discs this near the ground 
 
 
 def write_view(splat_ply: Path, out: Path, place, surface: np.ndarray | None = None,
-               ground: dict | None = None) -> int:
+               ground: dict | None = None, normals: np.ndarray | None = None) -> int:
     """The splat for the studio viewer, moved like the GLB (`place`, from mesh.placement) so
     the two line up: per disc 16 float32 = centre xyz, opacity | first axis xyz, red | second
     axis xyz, green | blue, 0, 0, 0. The axes are the disc's two radii (1 sigma). Colour is
     the base (view-independent) colour. With `surface` (the mesh's vertices), only discs
     within VIEW_NEAR_CELLS fusion cells of it: in the ground the splat holds the whole room,
     whose blurred walls and chairs hang in front of the object from most viewpoints. With
-    `ground` (splat report), only the object and the ground round it (`on_ground_patch`).
-    Returns the number of discs."""
+    `normals` too (the mesh's, per vertex), each disc is laid flat on the surface beside it:
+    on a plain surface, where the photos say little about depth, training leaves long thin
+    discs standing out of it, and the viewer draws them to 3 sigma, as fuzz pulled out past
+    the edges (the arcade's roof). Their colour stays where it was. With `ground` (splat
+    report), only the object and the ground round it (`on_ground_patch`). Returns the number
+    of discs."""
     p = read_ply(splat_ply)
     opacity = 1 / (1 + np.exp(-p["opacities"]))
     keep = opacity > VIEW_MIN_OPACITY
     if ground and "top" in ground:
         keep &= on_ground_patch(p["means"], ground)
+    nearest = None
     if surface is not None and len(surface):
         from scipy.spatial import cKDTree
 
         near = VIEW_NEAR_CELLS * float(np.ptp(surface, axis=0).max()) / GRID
         idx = np.flatnonzero(keep)
-        dist, _ = cKDTree(surface).query(p["means"][idx], distance_upper_bound=near)
+        dist, nearest = cKDTree(surface).query(p["means"][idx], distance_upper_bound=near)
         keep[idx[~np.isfinite(dist)]] = False
+        nearest = nearest[np.isfinite(dist)]
     q = p["quats"][keep] / np.linalg.norm(p["quats"][keep], axis=1, keepdims=True)
     w, x, y, z = q.T
     rot = np.stack([  # the columns are the disc's local axes
         np.stack([1 - 2 * (y * y + z * z), 2 * (x * y + w * z), 2 * (x * z - w * y)], 1),
         np.stack([2 * (x * y - w * z), 1 - 2 * (x * x + z * z), 2 * (y * z + w * x)], 1),
     ], 1)  # [n, 2 axes, xyz]
-    scales = np.exp(p["scales"][keep, :2])
+    radii = rot * np.exp(p["scales"][keep, :2])[:, :, None]
+    if normals is not None and nearest is not None:
+        nrm = normals[nearest]
+        nrm = nrm / np.maximum(np.linalg.norm(nrm, axis=1, keepdims=True), 1e-12)
+        radii = radii - np.einsum("nkx,nx->nk", radii, nrm)[:, :, None] * nrm[:, None]
     centre = p["means"][keep]
     moved, _ = place(centre, np.zeros_like(centre))
-    axes = [place(centre + rot[:, k] * scales[:, k:k + 1], np.zeros_like(centre))[0] - moved
-            for k in range(2)]
+    axes = [place(centre + radii[:, k], np.zeros_like(centre))[0] - moved for k in range(2)]
     rgb = (p["sh0"][keep, 0] * SH0 + 0.5).clip(0, 1)
     n = len(centre)
     data = np.zeros((n, 16), np.float32)

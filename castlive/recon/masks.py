@@ -18,6 +18,9 @@ MODEL = "birefnet-general-lite"
 # How far to move the mask edge, as a fraction of the image's long side.
 GROW_FOR_POSES = 0.015  # out: keep the object's edges and corners, where joining features are
 GROW_FOR_FUSION = -0.003  # in: edge pixels are part background
+# In the ground the outline only empties space round the object, so it errs outwards: a
+# shrunk outline shaved the walls above the ground and left a lip at their foot.
+GROW_FOR_CARVE = 0.003
 
 
 @functools.cache

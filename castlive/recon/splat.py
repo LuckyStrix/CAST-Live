@@ -4,7 +4,9 @@ A 2D gaussian splat (gsplat, Apache-2.0; 2DGS: flat discs that sit on the surfac
 the undistorted (and, for objects, masked and cropped) photos from the dense workspace. Its
 depth, rendered from every camera, is fused into a signed-distance grid on the GPU, and marching
 cubes gives the mesh. Off-object pixels count as empty space, so the object's outline from every
-view carves the shape too. Parts no camera saw stay open (honest output, as in CAST).
+view carves the shape too. In the ground the photos are used whole, and the outline carves only
+above the ground and near the object (which also gives the ground's plane: the model's up).
+Parts no camera saw stay open (honest output, as in CAST).
 
 Run on its own (experiments): python -m castlive.recon.splat <dense dir> <out dir> [--steps N]
 """
@@ -40,6 +42,15 @@ NCC_WEIGHT, GEO_WEIGHT = 0.5, 0.03
 PATCH_STEP = 2
 FLAT_STD = 0.005  # patches with less grey contrast than this carry no evidence
 MIN_TRACK, MAX_ERROR_PX = 3, 1.5  # COLMAP points trusted as measurements
+# In the ground, the photos are not masked (the ground matters), but a plain face or the
+# blurred ground behind an edge leaves the splat free to swell: the arcade cabinet's flat roof
+# domed by 9% of its height and a lip of table-coloured discs stood off its back edge. So the
+# object's outline still empties space when fusing, only above the ground and near the object:
+OBJECT_SHARE = 0.7  # a gaussian is the object's if this share of the photos showing it mask it
+GROUND_FIT = 0.01  # ground plane tolerance, as a share of the fusion radius
+MIN_GROUND_SHARE = 0.3  # of the gaussians that are not the object, on that plane
+CARVE_REACH = 1.2  # how far round the object's footprint (its 99% radius) carving reaches
+HULL_VIEWS = 3  # outside the (slightly grown) outline in this many photos: empty, whatever the rest say
 
 
 @dataclass
@@ -129,15 +140,21 @@ class Photos:
     def __init__(self, dense: Path, views: list[View], use_masks: bool):
         from PIL import Image
 
-        self.images, self.masks = [], []
+        self.images = []
         for v in views:
             with Image.open(dense / "images" / v.name) as im:
                 self.images.append(np.asarray(im.convert("RGB")))
-            if use_masks:
-                with Image.open(dense / "masks" / (v.name + ".png")) as m:
-                    self.masks.append(np.asarray(m.convert("L")) > 127)
-        if not use_masks:
-            self.masks = [None] * len(views)
+        self.masks = read_masks(dense, views) if use_masks else [None] * len(views)
+
+
+def read_masks(dense: Path, views: list[View]) -> list[np.ndarray]:
+    from PIL import Image
+
+    out = []
+    for v in views:
+        with Image.open(dense / "masks" / (v.name + ".png")) as m:
+            out.append(np.asarray(m.convert("L")) > 127)
+    return out
 
 
 def render(params, view_t, sh_degree, background=None, distloss=False):
@@ -458,9 +475,83 @@ def write_view(splat_ply: Path, out: Path, place) -> int:
     return n
 
 
-def fuse(cams, depth_maps, masks, lo, hi, cells=GRID, band_cells=BAND):
+def ground_and_object(params, cams, masks, centre: np.ndarray, radius: float) -> dict | None:
+    """In the ground: the plane the object stands on, and the reach of its footprint round
+    the upright axis through it, from the solid gaussians. A gaussian is the object's when
+    most photos that show it have it inside the object mask; the ground is a plane through the
+    rest. None when either is unclear (then nothing is carved, the camera up is kept)."""
+    import open3d as o3d
+    import torch
+
+    o3d.utility.set_verbosity_level(o3d.utility.VerbosityLevel.Error)
+    c = torch.tensor(centre, dtype=torch.float32, device="cuda")
+    pts = params["means"].detach()
+    pts = pts[(torch.sigmoid(params["opacities"].detach()) > 0.5) & ((pts - c).norm(dim=1) < radius)]
+    shown = torch.zeros(len(pts), device="cuda")
+    inside = torch.zeros(len(pts), device="cuda")
+    for (viewmat, K, w, h), mask in zip(cams, masks):
+        pc = pts @ viewmat[:3, :3].T + viewmat[:3, 3]
+        z = pc[:, 2].clamp_min(1e-9)
+        u = (K[0, 0] * pc[:, 0] / z + K[0, 2]).floor().long()
+        v = (K[1, 1] * pc[:, 1] / z + K[1, 2]).floor().long()
+        vis = (pc[:, 2] > 0) & (u >= 0) & (u < w) & (v >= 0) & (v < h)
+        m = torch.from_numpy(mask).cuda().reshape(-1)[v.clamp(0, h - 1) * w + u.clamp(0, w - 1)]
+        shown += vis.float()
+        inside += (vis & m).float()
+    obj = ((shown >= 10) & (inside >= OBJECT_SHARE * shown)).cpu().numpy()
+    pts = pts.cpu().numpy().astype(np.float64)
+    if obj.sum() < 100 or (~obj).sum() < 100:
+        return None
+    rest = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(pts[~obj]))
+    (a, b, cc, d), inliers = rest.segment_plane(GROUND_FIT * radius, 3, 2000)
+    n = np.array([a, b, cc])
+    n, d = n / np.linalg.norm(n), d / np.linalg.norm(n)
+    cam_side = np.median(centres_from(cams) @ n + d)
+    if cam_side < 0:
+        n, d = -n, -d
+    height = pts[obj] @ n + d
+    share = len(inliers) / int((~obj).sum())
+    if share < MIN_GROUND_SHARE or np.median(height) <= 0:
+        return None
+    above = pts[obj][height > 0]
+    flat = above - np.outer(above @ n + d, n)  # dropped onto the ground
+    foot = np.median(flat, axis=0)
+    reach = float(np.quantile(np.linalg.norm(flat - foot, axis=1), 0.99)) * CARVE_REACH
+    return {"normal": n.tolist(), "offset": float(d), "foot": foot.tolist(), "reach": reach,
+            "object_gaussians": int(obj.sum()), "ground_share": round(share, 3)}
+
+
+def centres_from(cams) -> np.ndarray:
+    """Camera centres from the GPU camera tuples."""
+    out = []
+    for viewmat, _, _, _ in cams:
+        m = viewmat.cpu().numpy().astype(np.float64)
+        out.append(-m[:3, :3].T @ m[:3, 3])
+    return np.array(out)
+
+
+def carve_region(ground: dict):
+    """Which grid points the object's outline may empty, in the ground: above the ground
+    (beyond the fusion band, so the ground itself is never cut) and within the object's
+    reach of its upright axis. Elsewhere other things in view stay."""
+    import torch
+
+    n = torch.tensor(ground["normal"], dtype=torch.float32, device="cuda")
+    foot = torch.tensor(ground["foot"], dtype=torch.float32, device="cuda")
+
+    def region(grid, band):
+        rel = grid - foot
+        up = rel @ n
+        return (up > band) & ((rel - up[:, None] * n).norm(dim=1) < ground["reach"])
+
+    return region
+
+
+def fuse(cams, depth_maps, masks, lo, hi, cells=GRID, band_cells=BAND, region=None):
     """Average signed distances from every depth map on a grid over [lo, hi] (GPU), then
-    marching cubes. Off-object pixels (masks) count as empty space. Returns vertices, faces."""
+    marching cubes. Off-object pixels (masks) count as empty space; with `region` (a
+    function of the grid points and the band width) only at the points it allows. Returns
+    vertices, faces."""
     import torch
     from skimage.measure import marching_cubes
 
@@ -471,6 +562,8 @@ def fuse(cams, depth_maps, masks, lo, hi, cells=GRID, band_cells=BAND):
     tsdf = torch.zeros(len(grid), device=lo.device)
     weight = torch.zeros(len(grid), device=lo.device)
     band = band_cells * cell
+    carvable = region(grid, band) if region is not None else None
+    outside = torch.zeros(len(grid), device=lo.device) if carvable is not None else None
     for (viewmat, K, w, h), depth, mask in zip(cams, depth_maps, masks):
         pc = grid @ viewmat[:3, :3].T + viewmat[:3, 3]
         z = pc[:, 2]
@@ -483,11 +576,21 @@ def fuse(cams, depth_maps, masks, lo, hi, cells=GRID, band_cells=BAND):
         seen = (d > 0) & (d - z > -band)  # in front of the surface or just behind it
         if mask is not None:
             off = ~torch.from_numpy(mask).cuda().reshape(-1)[idx]
+            if carvable is not None:
+                off &= carvable
+                outside += (off & inside).float()
             sdf = torch.where(off, torch.ones_like(sdf), sdf)
             seen |= off
         use = inside & seen
         tsdf = torch.where(use, (tsdf * weight + sdf) / (weight + 1), tsdf)
         weight += use.float()
+    if outside is not None:  # outside the object's outline in a few photos: empty, however
+        # many others (seeing it head on) put a surface there. Softened over a cell or two so
+        # the cut is a smooth wall, not a voxel staircase.
+        hull = (outside >= HULL_VIEWS).float().reshape(1, 1, *dims)
+        hull = torch.nn.functional.avg_pool3d(hull, 3, 1, 1, count_include_pad=False).reshape(-1)
+        tsdf = torch.where(hull > 0, torch.maximum(tsdf, 2 * hull - 1), tsdf)
+        weight = torch.where(hull > 0.5, weight.clamp_min(1), weight)
     seen = (weight > 0).reshape(dims).cpu().numpy()
     vol = torch.where(weight > 0, tsdf, torch.ones_like(tsdf)).reshape(dims).cpu().numpy()
     if vol.min() >= 0 or vol.max() <= 0:
@@ -562,10 +665,12 @@ def save_ply(params, path: Path) -> None:
 
 def make(dense: Path, out: Path, use_masks: bool, centre: np.ndarray, radius: float,
          steps: int = STEPS, progress=lambda f: None, mix: float = DEPTH_MIX, band: float = BAND,
-         refuse: bool = False,
+         refuse: bool = False, carve: bool = False,
          **options):
     """Train, save the splat (out/splat.ply) and fuse the surface. Returns (vertices, faces,
-    colours, report). `refuse`: skip training, fuse the splat already in `out`."""
+    colours, report). `refuse`: skip training, fuse the splat already in `out`. `carve` (in
+    the ground): train on whole photos, but let the object masks in dense/masks empty the
+    space round the object when fusing, and find the ground (report["ground"])."""
     import torch
 
     out.mkdir(parents=True, exist_ok=True)
@@ -579,8 +684,18 @@ def make(dense: Path, out: Path, use_masks: bool, centre: np.ndarray, radius: fl
         save_ply(params, out / "splat.ply")
     t = time.time()
     lo, hi = bounds(params, centre, radius)
-    verts, faces = fuse(cams, depths(params, cams, photos, mix), photos.masks, lo, hi,
-                        band_cells=band)
+    fuse_masks, region = photos.masks, None
+    if carve and not use_masks:
+        fuse_masks = read_masks(dense, read_views(text_model(dense)))
+        ground = ground_and_object(params, cams, fuse_masks, centre, radius)
+        if ground:
+            report["ground"] = ground
+            region = carve_region(ground)
+        else:  # no clear ground or object: carving could cut either
+            report["ground"] = None
+            fuse_masks = photos.masks
+    depth_maps = depths(params, cams, photos, mix)
+    verts, faces = fuse(cams, depth_maps, fuse_masks, lo, hi, band_cells=band, region=region)
     report["fuse_seconds"] = round(time.time() - t)
     colours = colours_at(params, verts)
     torch.cuda.empty_cache()
@@ -596,6 +711,8 @@ def parser():
     ap.add_argument("out", type=Path)
     ap.add_argument("--steps", type=int, default=STEPS)
     ap.add_argument("--no-masks", action="store_true")
+    ap.add_argument("--carve", action="store_true",
+                    help="with --no-masks: masks in <dense>/masks empty the space round the object")
     ap.add_argument("--centre", help="x,y,z of what was filmed (default: where cameras look)")
     ap.add_argument("--radius", type=float, help="how far round it to make the surface")
     ap.add_argument("--progress", action="store_true", help="print 'progress <fraction>' lines")
@@ -627,7 +744,8 @@ def main():
     t = time.time()
     try:
         v, f, col, report = make(a.dense, a.out, not a.no_masks, centre, radius, a.steps, show,
-                                 mix=a.depth_mix, band=a.band, refuse=a.refuse, normal_weight=a.normal_weight,
+                                 mix=a.depth_mix, band=a.band, refuse=a.refuse, carve=a.carve,
+                                 normal_weight=a.normal_weight,
                                  use_multiview=not a.no_multiview,
                                  ncc_weight=a.ncc_weight, patch_step=a.patch_step,
                                  flat_std=a.flat_std)

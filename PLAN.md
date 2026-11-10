@@ -103,6 +103,16 @@ Reused as-is from CAST: invite/project model, chunked resumable upload, CSP head
      agrees 16-22% better with the photos, no loss of sharpness.
    - Poses: SIFT + incremental mapper tried first: both box scans joined in ~100 s instead
      of 22-40 min (same cameras to 0.05% of the orbit, lower reprojection error).
+   - **In the ground (10 Nov 2026, arcade cabinet on a table, d1b6d99d):** with no masks the
+     plain roof domed by ~9% of the height and a lip of table-coloured discs stood off its back
+     edge (blurred table behind the edge: nothing to say it was empty), and the model leaned
+     16° (up came from how the phone was held). Now the photos still train unmasked, but object
+     masks (grown 0.3%) empty space when fusing, only above the ground plane and within 1.2x
+     the object's footprint; space outside the outline in 3+ photos is empty however many
+     top-down views put a surface there (softened over a cell). The ground plane, fitted to
+     the gaussians that are not the object, is the model's up. Roof flat to ~2% of height, lip
+     gone, table level (0.1°), COLMAP points median 0.039 → 0.034%. Mask failure: not trimmed.
+     A narrower fusion band (3 cells) did not flatten the dome, so it was the splat, not fusion.
    - Open: faint relief along glossy ink, broad waviness on plain faces; real-world scale.
 5. **Studio viewers — done (7 Nov 2026):** the trained splat drawn as what it is, flat 2D
    gaussian discs, on the existing three.js viewer (no extra library), placed like the mesh,

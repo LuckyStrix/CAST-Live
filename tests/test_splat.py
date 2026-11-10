@@ -56,6 +56,17 @@ def test_run_splat_arguments_parse_with_a_negative_centre(tmp_path, monkeypatch)
     run.run_splat(tmp_path, tmp_path / "s", True, [-0.13, 0.4, -0.08], 2.5, tmp_path / "log")
     a = splat.parser().parse_args(args.read_text().splitlines()[2:])  # after -m <module>
     assert a.centre == "-0.13,0.4,-0.08" and a.radius == 2.5 and not a.no_masks
+    assert not a.carve
+
+
+def test_run_splat_carves_in_the_ground_only_when_asked(tmp_path, monkeypatch):
+    args = tmp_path / "args"
+    fake_python(tmp_path, monkeypatch, f'printf "%s\\n" "$@" > {args}\necho "{{}}"\n')
+    for carve in (True, False):
+        run.run_splat(tmp_path, tmp_path / "s", False, [0, 0, 0], 1.0, tmp_path / "log",
+                      carve=carve)
+        a = splat.parser().parse_args(args.read_text().splitlines()[2:])
+        assert a.no_masks and a.carve == carve
 
 
 def test_run_splat_reports_progress_and_result(tmp_path, monkeypatch):

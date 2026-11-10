@@ -153,10 +153,21 @@ def process(video: Path, meta: dict, mode: str, run_dir: Path,
             for f in txt.iterdir():
                 shutil.copy(f, dense_dir / "sparse" / f.name)
             shutil.rmtree(txt)
+        carve = False
+        if not use_masks:  # whole photos train the splat; the object's outline only trims it
+            t = time.time()
+            try:
+                report["carve_masks"] = masks.make_masks(
+                    dense_dir / "images", dense_dir / "masks", masks.GROW_FOR_CARVE,
+                    progress=colmap.span(p, 0.03, 0.1))
+                carve = True
+            except PipelineError as e:  # the model is still made, just not trimmed
+                note(f"splat: no object outline, nothing trimmed ({e})")
+            secs["masks"] = time.time() - t
         centre, distance, _ = look()
         t = time.time()
         report["splat"] = run_splat(dense_dir, splat_dir, use_masks, centre, 0.8 * distance,
-                                    run_dir / "splat.log", colmap.span(p, 0.1, 1.0))
+                                    run_dir / "splat.log", colmap.span(p, 0.1, 1.0), carve=carve)
         secs["splat"] = time.time() - t
         report["splat"]["seconds"] = {k: round(v) for k, v in secs.items()}
         note(f"splat: {report['splat']['gaussians']:,} gaussians, {report['splat']['psnr_held_out']}"
@@ -164,6 +175,8 @@ def process(video: Path, meta: dict, mode: str, run_dir: Path,
 
     def do_mesh(p):
         centre, _, up = look()
+        if report["splat"].get("ground"):  # in the ground: stand it on the ground, not on
+            up = np.array(report["splat"]["ground"]["normal"])  # how the phone was held
         m = mesh.load_ply(splat_dir / "mesh.ply")
         m.stats = report["mesh"] = report["splat"]["mesh"]
         note(f"mesh: {m.stats['triangles']:,} triangles")
@@ -208,7 +221,7 @@ def process(video: Path, meta: dict, mode: str, run_dir: Path,
 
 
 def run_splat(dense: Path, out: Path, use_masks: bool, centre, radius: float, log: Path,
-              progress=lambda f: None) -> dict:
+              progress=lambda f: None, carve: bool = False) -> dict:
     """The splat stage in its own process: PyTorch's CUDA libraries stay out of this one (the
     masks' ONNX Runtime brings others), and its GPU memory is freed when it ends."""
     cmd = [sys.executable, "-m", "castlive.recon.splat", str(dense), str(out), "--progress",
@@ -216,6 +229,8 @@ def run_splat(dense: Path, out: Path, use_masks: bool, centre, radius: float, lo
            "--centre=" + ",".join(f"{x:.9g}" for x in centre), f"--radius={radius:.9g}"]
     if not use_masks:
         cmd.append("--no-masks")
+        if carve:
+            cmd.append("--carve")
     last, error = "", None
     with open(log, "a", encoding="utf-8", errors="replace") as fh:
         fh.write(f"\n===== {' '.join(cmd)}\n")

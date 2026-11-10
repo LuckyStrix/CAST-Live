@@ -119,9 +119,11 @@ Reused as-is from CAST: invite/project model, chunked resumable upload, CSP head
      discs hung in front of the object from low viewpoints. 388k → 205k viewer discs. The
      viewer still showed fuzz pulled out above the roof and at its back corner: long thin discs
      (up to 12:1) centred on the roof, inside the outline in all 160 photos, standing out of
-     the plain surface, drawn to 3 sigma. The viewer now lays each disc flat on the mesh beside
-     it (drops the part of its radii along the mesh normal); moving the centres onto the
-     mesh too was much worse (hidden discs came to the surface).
+     the plain surface, drawn to 3 sigma. Laying the viewer's discs flat on the mesh did not
+     visibly help (moving their centres onto it was much worse). What did: an outline loss in
+     training (OUTLINE_FROM 0.3): the discs round the object, drawn alone, must not draw
+     outside its outline. Roof edges crisp, wisps and streaks gone from every side; held-out
+     22.54 → 22.66 dB; mesh against COLMAP points 0.033 → 0.039% median (a little worse).
    - Open: faint relief along glossy ink, broad waviness on plain faces; real-world scale.
 5. **Studio viewers — done (7 Nov 2026):** the trained splat drawn as what it is, flat 2D
    gaussian discs, on the existing three.js viewer (no extra library), placed like the mesh,

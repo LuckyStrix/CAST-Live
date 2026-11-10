@@ -51,6 +51,8 @@ GROUND_FIT = 0.01  # ground plane tolerance, as a share of the fusion radius
 MIN_GROUND_SHARE = 0.3  # of the gaussians that are not the object, on that plane
 CARVE_REACH = 1.2  # how far round the object's footprint (its 99% radius) carving reaches
 HULL_VIEWS = 3  # outside the (slightly grown) outline in this many photos: empty, whatever the rest say
+OUTLINE_FROM = 0.3  # in the ground: from this fraction of training, the object's discs must
+OUTLINE_WEIGHT = 1.0  # stay inside its outline, with this weight (`train`)
 
 
 @dataclass
@@ -273,8 +275,13 @@ def multiview(colours, normals, alphas, cam, cam_n, grey_r, grey_n, depth_n, mas
 def train(dense: Path, use_masks: bool, steps: int = STEPS, progress=lambda f: None,
           normal_weight: float = 0.05, seed: int = 0, use_multiview: bool = True,
           ncc_weight: float = NCC_WEIGHT,
-          patch_step: int = PATCH_STEP, flat_std: float = FLAT_STD):
-    """Train the splat. Returns (params, photos, cameras, report)."""
+          patch_step: int = PATCH_STEP, flat_std: float = FLAT_STD, outline=None):
+    """Train the splat. Returns (params, photos, cameras, report). `outline` (in the ground:
+    the object masks, the centre and radius of interest): from OUTLINE_FROM of training, the
+    discs round the object (`carve_region` of the ground found so far) are drawn on their own
+    and what they draw outside the object's outline is a loss. Without it, discs on a plain
+    face (the arcade's roof) grow long and stick out past its edges as streaks and wisps,
+    which no later trimming removes: their centres are inside the outline in every photo."""
     import torch
     from gsplat.strategy import DefaultStrategy
 
@@ -323,7 +330,17 @@ def train(dense: Path, use_masks: bool, steps: int = STEPS, progress=lambda f: N
     rng = np.random.default_rng(seed)
     order: list[int] = []
     start = time.time()
+    region, band, outline_report = None, 0.0, {}
     for step in range(steps):
+        if outline is not None and region is None and step >= OUTLINE_FROM * steps:
+            with torch.no_grad():
+                ground = ground_and_object(params, cams, outline[0], *outline[1:])
+                if ground:
+                    region = carve_region(ground)
+                    lo, hi = bounds(params, *outline[1:])
+                    band = BAND * float((hi - lo).max()) / GRID
+            outline_report = {"outline_from_step": step, "outline_ground": bool(ground)}
+            outline = outline if ground else None
         if not order:
             order = list(rng.permutation(trained))
         i = order.pop()
@@ -343,6 +360,14 @@ def train(dense: Path, use_masks: bool, steps: int = STEPS, progress=lambda f: N
             loss = loss + normal_weight * (1 - (normals[0] * nd).sum(-1)).mean()
         if step >= DISTORT_FROM * steps:
             loss = loss + 1e-2 * distort.mean()
+        if region is not None:
+            with torch.no_grad():
+                sel = region(params["means"], band)
+            if sel.any():
+                part = {k: v[sel] for k, v in params.items()}
+                alone = render(part, cams[i], 0)[1][0, ..., 0]
+                inside = torch.from_numpy(outline[0][i]).to(dev).float()
+                loss = loss + OUTLINE_WEIGHT * (alone * (1 - inside)).sum() / inside.sum().clamp_min(1)
         if use_multiview and step >= MULTIVIEW_FROM * steps and near[i]:
             j = near[i][rng.integers(len(near[i]))]
             with torch.no_grad():
@@ -368,7 +393,7 @@ def train(dense: Path, use_masks: bool, steps: int = STEPS, progress=lambda f: N
             progress(step / steps)
     report = {"views": len(views), "held_out": len(held), "gaussians": len(params["means"]),
               "steps": steps, "train_seconds": round(time.time() - start),
-              "gpu_gb": round(torch.cuda.max_memory_allocated() / 2 ** 30, 1)}
+              "gpu_gb": round(torch.cuda.max_memory_allocated() / 2 ** 30, 1), **outline_report}
     for k, vals in report_mv.items():  # how well the last tenth of training agreed across views
         if vals:
             report[f"multiview_{k}"] = round(float(np.mean(vals[-max(1, len(vals) // 10):])), 4)
@@ -743,8 +768,12 @@ def make(dense: Path, out: Path, use_masks: bool, centre: np.ndarray, radius: fl
         params, photos, cams, report = (load_ply(out / "splat.ply"), Photos(dense, views, use_masks),
                                         cameras(views), {})
     else:
+        outline = None
+        if carve and not use_masks:
+            outline = (read_masks(dense, read_views(text_model(dense))), centre, radius)
         params, photos, cams, report = train(
-            dense, use_masks, steps, progress=lambda f: progress(0.9 * f), **options)
+            dense, use_masks, steps, progress=lambda f: progress(0.9 * f), outline=outline,
+            **options)
     t = time.time()
     lo, hi = bounds(params, centre, radius)
     fuse_masks, region = photos.masks, None

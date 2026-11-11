@@ -6,6 +6,7 @@ while filming, its own live coverage.
 """
 
 import asyncio
+import hashlib
 import io
 import json
 import logging
@@ -17,7 +18,7 @@ from pathlib import Path
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from castlive.common import config, db
@@ -108,10 +109,30 @@ def create_app(cfg: config.Config | None = None) -> FastAPI:
         # The page's files change with each update: phones must check for a new copy (an
         # unchanged file still comes back as a quick 304), not keep running an old script.
         if request.url.path.startswith(("/assets/", "/i18n/", "/c/")):
-            response.headers["Cache-Control"] = "no-cache"
+            response.headers.setdefault("Cache-Control", "no-cache")
         return response
 
     web = config.WEB
+    assets = (web / "capture").resolve()
+
+    def assets_version() -> str:
+        """Changes whenever a file of the page changes. The page names its files under it, so a
+        phone fetches new ones after an update (Safari kept running a cached script for hours,
+        without asking the server, even after the page itself was reloaded)."""
+        h = hashlib.sha1()
+        for f in sorted(assets.iterdir()):
+            st = f.stat()
+            h.update(f"{f.name}:{st.st_size}:{st.st_mtime_ns}".encode())
+        return h.hexdigest()[:12]
+
+    @app.get("/assets/v-{version}/{name}")
+    def versioned_asset(version: str, name: str):
+        # Relative imports (./store.js) resolve under the same version, so the whole page updates.
+        f = (assets / name).resolve()
+        if f.parent != assets or not f.is_file():
+            raise HTTPException(404)
+        return FileResponse(f, headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
     app.mount("/assets", StaticFiles(directory=web / "capture"), name="assets")
     app.mount("/i18n", StaticFiles(directory=web / "i18n"), name="i18n")
 
@@ -121,7 +142,8 @@ def create_app(cfg: config.Config | None = None) -> FastAPI:
 
     @app.get("/c/{token}")
     def capture_page(token: str):
-        return FileResponse(web / "capture" / "index.html")
+        html = (assets / "index.html").read_text(encoding="utf-8")
+        return HTMLResponse(html.replace('"/assets/', f'"/assets/v-{assets_version()}/'))
 
     # One lock per capture: chunk writes, finish and cancel for the same capture never overlap.
     # (One capture process, so an asyncio lock is enough.)

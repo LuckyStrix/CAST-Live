@@ -11,10 +11,10 @@ const CHUNK = 4 * 1024 * 1024; // at most this per piece: kinder to weak mobile 
 // --- Text -----------------------------------------------------------------------------------
 let strings = {};
 async function loadStrings() {
-  const en = await (await fetch("/i18n/en.json")).json();
+  const en = await (await fetch("/i18n/en.json", { cache: "no-cache" })).json();
   const lang = (navigator.language || "en").slice(0, 2);
   let local = {};
-  if (lang !== "en") local = await fetch(`/i18n/${lang}.json`).then((r) => (r.ok ? r.json() : {})).catch(() => ({}));
+  if (lang !== "en") local = await fetch(`/i18n/${lang}.json`, { cache: "no-cache" }).then((r) => (r.ok ? r.json() : {})).catch(() => ({}));
   strings = { ...en, ...local };
   document.documentElement.lang = lang;
   document.querySelectorAll("[data-t]").forEach((el) => { el.textContent = t(el.dataset.t); });

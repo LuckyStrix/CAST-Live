@@ -95,6 +95,19 @@ def test_pages_and_headers(capture, token):
     assert capture.get("/i18n/en.json").json()["finish"]
 
 
+def test_page_names_its_files_by_version(capture, token):
+    # Phones must fetch new scripts after an update, not keep running cached ones.
+    import re
+    html = capture.get(f"/c/{token}").text
+    m = re.search(r'"/assets/(v-[0-9a-f]+)/capture\.js"', html)
+    assert m, html
+    for name in ("capture.js", "store.js", "capture.css"):
+        r = capture.get(f"/assets/{m.group(1)}/{name}")
+        assert r.status_code == 200 and "immutable" in r.headers["cache-control"]
+    assert capture.get(f"/assets/{m.group(1)}/..%2Fi18n%2Fen.json").status_code == 404
+    assert capture.get("/assets/capture.js").headers["cache-control"] == "no-cache"
+
+
 def test_stopped_upload_is_refused_not_faked(capture, token, cfg):
     # An abandoned or cancelled upload must not answer "ok", or the phone deletes its copy.
     start(capture, token)

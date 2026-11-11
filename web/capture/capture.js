@@ -163,7 +163,8 @@ async function lockCamera(track) {
 // The phone's own light (torch), for lighting that moves with the camera, e.g. behind a polariser
 // crossed with one on the lens to remove glare. Safari on iOS 17.4+ and Android Chrome support it.
 // Off unless switched on; the choice is remembered on this phone. iOS 18 can report the torch as
-// off in getSettings() when it is on, so trust our own state, not the track's.
+// off in getSettings() when it is on, so trust our own state, not the track's. The button shows
+// unless the camera says it has no light: Safari may leave torch out of getCapabilities().
 let torchOn = false;
 let torchAvailable = false;
 function torchSaved() { try { return localStorage.getItem("castlive.torch") === "1"; } catch { return false; } }
@@ -183,7 +184,7 @@ async function setTorch(track, on) {
 
 async function setupTorch(track) {
   const caps = track.getCapabilities ? track.getCapabilities() : {};
-  torchAvailable = !!caps.torch;
+  torchAvailable = "torch" in caps ? !!caps.torch : true;
   torchOn = false;
   $("torch").hidden = !torchAvailable;
   $("torch").classList.remove("on");

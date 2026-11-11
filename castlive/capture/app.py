@@ -104,7 +104,12 @@ def create_app(cfg: config.Config | None = None) -> FastAPI:
     async def limit(request: Request, call_next):
         if not per_ip.allow(client_ip(request)):
             return JSONResponse({"error": "slow down"}, status_code=429)
-        return await call_next(request)
+        response = await call_next(request)
+        # The page's files change with each update: phones must check for a new copy (an
+        # unchanged file still comes back as a quick 304), not keep running an old script.
+        if request.url.path.startswith(("/assets/", "/i18n/", "/c/")):
+            response.headers["Cache-Control"] = "no-cache"
+        return response
 
     web = config.WEB
     app.mount("/assets", StaticFiles(directory=web / "capture"), name="assets")

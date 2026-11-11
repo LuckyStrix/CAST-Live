@@ -141,6 +141,7 @@ def test_viewer_file_has_placed_discs(tmp_path):
 
 
 def test_viewer_lays_discs_flat_on_the_surface(tmp_path):
+    pytest.importorskip("scipy")
     names = (["x", "y", "z", "nx", "ny", "nz", "f_dc_0", "f_dc_1", "f_dc_2"]
              + [f"f_rest_{i}" for i in range(45)] + ["opacity", "scale_0", "scale_1", "scale_2"]
              + [f"rot_{i}" for i in range(4)])

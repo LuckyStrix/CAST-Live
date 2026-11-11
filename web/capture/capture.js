@@ -105,6 +105,7 @@ $("start-camera").addEventListener("click", async () => {
     message(t("camera_denied")); return;
   }
   $("preview").srcObject = stream;
+  await setupTorch(stream.getVideoTracks()[0]);
   quality = new QualityCheck($("preview"));
   pass = 1;
   resetRecordUi();
@@ -151,12 +152,52 @@ async function lockCamera(track) {
   for (const key of ["focusMode", "exposureMode", "whiteBalanceMode"]) {
     if (!(caps[key] || []).includes("single-shot")) continue;
     try {
-      await track.applyConstraints({ advanced: [{ [key]: "single-shot" }] });
+      // keep the torch in the same set: a new set of constraints can switch it off
+      await track.applyConstraints({ advanced: [{ [key]: "single-shot", ...(torchOn ? { torch: true } : {}) }] });
       applied[key] = "single-shot";
     } catch { /* not supported on this phone */ }
   }
   return applied;
 }
+
+// The phone's own light (torch), for lighting that moves with the camera, e.g. behind a polariser
+// crossed with one on the lens to remove glare. Safari on iOS 17.4+ and Android Chrome support it.
+// Off unless switched on; the choice is remembered on this phone. iOS 18 can report the torch as
+// off in getSettings() when it is on, so trust our own state, not the track's.
+let torchOn = false;
+let torchAvailable = false;
+function torchSaved() { try { return localStorage.getItem("castlive.torch") === "1"; } catch { return false; } }
+function torchSave(on) { try { localStorage.setItem("castlive.torch", on ? "1" : "0"); } catch { /* fine */ } }
+
+async function setTorch(track, on) {
+  try {
+    await track.applyConstraints({ advanced: [{ torch: on }] });
+    torchOn = on;
+  } catch {
+    torchOn = false;
+  }
+  $("torch").classList.toggle("on", torchOn);
+  $("torch").setAttribute("aria-pressed", String(torchOn));
+  return torchOn;
+}
+
+async function setupTorch(track) {
+  const caps = track.getCapabilities ? track.getCapabilities() : {};
+  torchAvailable = !!caps.torch;
+  torchOn = false;
+  $("torch").hidden = !torchAvailable;
+  $("torch").classList.remove("on");
+  if (torchAvailable && torchSaved()) await setTorch(track, true);
+}
+
+$("torch").addEventListener("click", async () => {
+  if (!stream) return;
+  const want = !torchOn;
+  const on = await setTorch(stream.getVideoTracks()[0], want);
+  torchSave(on);
+  if (want && !on) warn(t("torch_failed"), 3000);
+  if (recording && recorder && recorder.state === "recording") mark(on ? "torch_on" : "torch_off");
+});
 
 let wakeLock = null;
 async function keepAwake() {
@@ -170,12 +211,14 @@ $("rec").addEventListener("click", async () => {
   const s = stream.getVideoTracks()[0].getSettings();
   const bits = Math.min(MAX_BITS, Math.max(12e6, (s.width || 1920) * (s.height || 1080) * (s.frameRate || 30) * 0.3));
   const locks = await lockCamera(stream.getVideoTracks()[0]);
+  if (torchOn) await setTorch(stream.getVideoTracks()[0], true); // make sure it is still on
   recorder = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: bits } : { videoBitsPerSecond: bits });
   recording = {
     id: crypto.randomUUID(), token, mode, mime: (recorder.mimeType || mime || "video/webm").split(";")[0],
     device: navigator.userAgent, total: null, created: Date.now(), created_on_server: false,
     meta: { mode, markers: [], sensor: false,
-      camera: { width: s.width, height: s.height, fps: s.frameRate, codec: recorder.mimeType || mime, requested_bps: bits, locks } },
+      camera: { width: s.width, height: s.height, fps: s.frameRate, codec: recorder.mimeType || mime, requested_bps: bits, locks,
+        torch: torchOn } },
   };
   await store.putCapture(recording);
   waitingFor = recording.id; // so a refusal from the server shows even while recording
@@ -368,8 +411,9 @@ function stopRecording() {
 }
 
 function closeCamera() {
-  if (stream) stream.getTracks().forEach((tr) => tr.stop());
+  if (stream) stream.getTracks().forEach((tr) => tr.stop()); // stopping the track turns the torch off
   stream = null;
+  torchOn = false;
 }
 
 // --- After sending --------------------------------------------------------------------------

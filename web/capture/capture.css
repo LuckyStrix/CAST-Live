@@ -69,6 +69,10 @@ body.mode-object .only-insitu, body.mode-in-situ .only-object { display: none; }
   font-weight: 650; font-size: 1.2rem; }
 .bottom { position: absolute; bottom: 0; left: 0; right: 0; padding: 16px 16px calc(16px + env(safe-area-inset-bottom));
   display: flex; flex-direction: column; gap: 10px; background: linear-gradient(transparent, rgba(0,0,0,.8)); }
+/* The phone's light: top right, out of the way of the ring. Lit when on. */
+button.torch { position: absolute; top: calc(12px + env(safe-area-inset-top)); right: 12px;
+  padding: 10px 14px; background: rgba(0,0,0,.55); color: var(--fg); font-size: .9rem; font-weight: 650; }
+button.torch.on { background: var(--accent); color: #1b1b1b; }
 .hint { margin: 0; text-align: center; text-shadow: 0 1px 3px #000; }
 button.rec { background: var(--bad); color: #fff; }
 .overlay { position: absolute; inset: 0; background: rgba(20,20,20,.92); padding: 32px 16px;
